@@ -327,3 +327,62 @@ def login():
     cursor.close()
     return jsonify({"error": "Email ou senha inválidos"}), 401
 
+
+@app.route('/servico', methods=['POST'])
+def servico_post():
+    try:
+        data = request.get_json()
+
+        # Validação de dados obrigatórios
+        if not data:
+            return jsonify({"error": "JSON inválido"}), 400
+
+        nome = data.get('nome')
+        valor = data.get('valor')
+        descricao = data.get('descricao')
+        id_usuario = data.get('id_usuario')  # Chave estrangeira obrigatória
+
+        # Validação dos campos obrigatórios
+        if not nome or not valor or not id_usuario:
+            return jsonify({
+                "error": "Campos obrigatórios: nome, valor, id_usuario"
+            }), 400
+
+        cursor = con.cursor()
+
+        # Query corrigida com todos os campos necessários
+        sql_servico = """
+        INSERT INTO SERVICOS
+        (ID_USUARIO, NOME, VALOR, DESCRICAO)
+        VALUES (?, ?, ?, ?)
+        """
+
+        # Executar a query
+        cursor.execute(sql_servico, (id_usuario, nome, valor, descricao))
+
+        # Commit para salvar no banco
+        con.commit()
+
+        # Fechar cursor
+        cursor.close()
+
+        return jsonify({
+            "message": "Serviço cadastrado com sucesso!",
+            "servico": {
+                'id_usuario': id_usuario,
+                'nome': nome,
+                'valor': valor,
+                'descricao': descricao,
+            }
+        }), 201
+
+    except Exception as e:
+        # Rollback em caso de erro
+        con.rollback()
+        if 'cursor' in locals():
+            cursor.close()
+
+        return jsonify({
+            "error": "Erro ao cadastrar serviço",
+            "details": str(e)
+        }), 500
