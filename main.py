@@ -1,8 +1,11 @@
 from flask import Flask
 import fdb
 from flask_cors import CORS
+import os
 
 app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'static', 'uploads')
+
 CORS(app, origins=["*"])
 app.config.from_pyfile('config.py')
 

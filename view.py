@@ -440,6 +440,48 @@ def fornecedores():
     else:
         return jsonify(mensagem='Nenhum dado encontrado')
 
+
+@app.route('/adms', methods=['GET'])
+def listar_adms():
+    cur = con.cursor()
+
+    cur.execute(
+        "SELECT id_usuario, nome, email, telefone, data_nascimento, cargo, categoria, nome_marca, status FROM usuario WHERE cargo = 4"
+    )
+    usuarios = cur.fetchall()
+    cur.close()
+    usuarios_dic = []
+
+    for usuario in usuarios:
+        id_usuario = usuario[0]
+        nome = usuario[1]
+        email = usuario[2]
+        telefone = usuario[3]
+        data_nascimento = usuario[4]
+        cargo = usuario[5]
+        categoria = usuario[6]
+        nome_marca = usuario[7]
+        status = usuario[8]
+
+        usuarios_dic.append({
+            'id_usuario': id_usuario,
+            'nome': nome,
+            'email': email,
+            'telefone': telefone,
+            'data_nascimento': data_nascimento,
+            'cargo': cargo,
+            'categoria': categoria,
+            'nome_marca': nome_marca,
+            'status': status
+        })
+
+    if usuarios_dic:
+        return jsonify(mensagem='Registro de Cadastro de ADMs', usuarios=usuarios_dic)
+    else:
+        return jsonify(mensagem='Nenhum dado encontrado')
+
+
+
 @app.route('/fornecedor/<int:id_fornecedor>', methods=['GET'])
 def fornecedor_por_id(id_fornecedor):
     cursor = con.cursor()
@@ -471,6 +513,30 @@ def fornecedor_por_id(id_fornecedor):
     )
 
 
+@app.route('/servico', methods=['GET'])
+def servico_get():
+    cursor = con.cursor()
+    cursor.execute(
+        "SELECT ID_USUARIO, NOME, VALOR, DESCRICAO FROM SERVICOS"
+    )
+    servicos = cursor.fetchall()
+    cursor.close()
+
+    servicos_lista = []
+    for servico in servicos:
+        servicos_lista.append({
+            'id_usuario': servico[0],
+            'nome': servico[1],
+            'valor': servico[2],
+            'descricao': servico[3]
+        })
+
+    if servicos_lista:
+        return jsonify(mensagem='Lista de serviços cadastrados', servicos=servicos_lista)
+    else:
+        return jsonify(mensagem='Nenhum serviço encontrado')
+
+
 @app.route('/servico', methods=['POST'])
 def servico_post():
     # 1. Autenticação e validação do token JWT
@@ -500,33 +566,49 @@ def servico_post():
         cursor.close()
         return jsonify({"error": "Apenas fornecedores podem cadastrar serviços."}), 403
 
+    # 3. Receber dados do form-data (nome, valor, descricao, imagem)
+    nome = request.form.get('nome')
+    valor = request.form.get('valor')
+    descricao = request.form.get('descricao')
+    imagem = request.files.get('imagem')
+
+    # 4. Validação dos campos obrigatórios
+    if not nome or not valor:
+        cursor.close()
+        return jsonify({
+            "error": "Campos obrigatórios: nome e valor"
+        }), 400
+
     try:
-        data = request.get_json()
-        # Validação de dados obrigatórios
-        if not data:
-            cursor.close()
-            return jsonify({"error": "JSON inválido"}), 400
-
-        nome = data.get('nome')
-        valor = data.get('valor')
-        descricao = data.get('descricao')
-
-        # Validação dos campos obrigatórios
-        if not nome or not valor:
-            cursor.close()
-            return jsonify({
-                "error": "Campos obrigatórios: nome e valor"
-            }), 400
-
-        # Query de cadastro do serviço com id_usuario extraído do token
+        # Passo 1: Inserir o novo serviço
         sql_servico = """
-        INSERT INTO SERVICOS
-        (ID_USUARIO, NOME, VALOR, DESCRICAO)
-        VALUES (?, ?, ?, ?)
+            INSERT INTO SERVICOS (ID_USUARIO, NOME, VALOR, DESCRICAO)
+            VALUES (?, ?, ?, ?)
         """
         cursor.execute(sql_servico, (id_usuario, nome, valor, descricao))
         con.commit()
+
+        # Passo 2: Selecionar o ID do serviço recém inserido
+        sql_select = """
+            SELECT ID_SERVICO
+            FROM SERVICOS
+            WHERE ID_USUARIO = ? AND NOME = ? AND VALOR = ? AND DESCRICAO = ?
+            ORDER BY ID_SERVICO DESC
+            FETCH FIRST 1 ROWS ONLY
+        """
+
+        cursor.execute(sql_select, (id_usuario, nome, valor, descricao))
+        id_servico = cursor.fetchone()[0]
+
+
+        con.commit()
         cursor.close()
+
+        if imagem:
+            nome_imagem = f"{id}.jpeg"
+            pasta_destino = os.path.join(app.config['UPLOAD_FOLDER'], "Servicos")
+            os.makedirs(pasta_destino, exist_ok=True)
+            imagem.save(os.path.join(pasta_destino, nome_imagem))
 
         return jsonify({
             "message": "Serviço cadastrado com sucesso!",
@@ -535,6 +617,8 @@ def servico_post():
                 'nome': nome,
                 'valor': valor,
                 'descricao': descricao,
+                'imagem_salva': True if imagem else False,
+                'id_servico': id_servico
             }
         }), 201
 
@@ -546,3 +630,241 @@ def servico_post():
             "error": "Erro ao cadastrar serviço",
             "details": str(e)
         }), 500
+
+
+
+@app.route('/servico/<int:id_servico>', methods=['PUT'])
+def servico_put(id_servico):
+    # 1. Autenticação
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario_token = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    cursor = con.cursor()
+    # 2. Verifica se o serviço existe e pertence ao usuário do token
+    cursor.execute("SELECT ID_USUARIO FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
+    serv = cursor.fetchone()
+    if not serv:
+        cursor.close()
+        return jsonify({'error': 'Serviço não encontrado'}), 404
+    if serv[0] != id_usuario_token:
+        cursor.close()
+        return jsonify({'error': 'Permissão negada. Só o dono do serviço pode editar.'}), 403
+
+    # 3. Recebe dados: aceitar tanto JSON quanto form-data (para imagem)
+    nome = None
+    valor = None
+    descricao = None
+    imagem = None
+
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        nome = request.form.get('nome')
+        valor = request.form.get('valor')
+        descricao = request.form.get('descricao')
+        imagem = request.files.get('imagem')
+    else:
+        data = request.get_json(silent=True)
+        if not data:
+            cursor.close()
+            return jsonify({'error': 'Nenhum dado enviado'}), 400
+        nome = data.get('nome')
+        valor = data.get('valor')
+        descricao = data.get('descricao')
+        # imagem só pode via multipart/form-data
+
+    # 4. Validação mínima: pelo menos um campo para atualizar
+    if not any([nome, valor, descricao, imagem]):
+        cursor.close()
+        return jsonify({'error': 'Nenhum campo para atualizar'}), 400
+
+    try:
+        # 5. Monta dinamicamente a query de update
+        update_fields = []
+        update_values = []
+
+        if nome is not None:
+            update_fields.append("NOME = ?")
+            update_values.append(nome)
+        if valor is not None:
+            update_fields.append("VALOR = ?")
+            update_values.append(valor)
+        if descricao is not None:
+            update_fields.append("DESCRICAO = ?")
+            update_values.append(descricao)
+
+        if update_fields:
+            update_values.append(id_servico)
+            sql = f"UPDATE SERVICOS SET {', '.join(update_fields)} WHERE ID_SERVICO = ?"
+            cursor.execute(sql, update_values)
+            con.commit()
+
+        # 6. Salva imagem se enviada
+        if imagem:
+            # garante que a config exista
+            upload_root = app.config.get('UPLOAD_FOLDER')
+            if not upload_root:
+                cursor.close()
+                return jsonify({'error': "Upload não configurado no servidor (UPLOAD_FOLDER)."}), 500
+
+            pasta_servicos = os.path.join(upload_root, "Servicos")
+            os.makedirs(pasta_servicos, exist_ok=True)
+            # definir nome de arquivo (ex: <id_servico>.jpeg)
+            nome_imagem = f"{id_servico}.jpeg"
+            caminho_imagem = os.path.join(pasta_servicos, nome_imagem)
+            imagem.save(caminho_imagem)
+
+        cursor.close()
+        return jsonify({
+            'message': 'Serviço atualizado com sucesso',
+            'servico': {
+                'id_servico': id_servico,
+                'nome': nome,
+                'valor': valor,
+                'descricao': descricao,
+                'imagem_salva': True if imagem else False
+            }
+        }), 200
+
+    except Exception as e:
+        con.rollback()
+        if 'cursor' in locals():
+            cursor.close()
+        return jsonify({'error': 'Erro ao atualizar serviço', 'details': str(e)}), 500
+
+
+@app.route('/servico/<int:id_servico>', methods=['DELETE'])
+def servico_delete(id_servico):
+    # 1. Autenticação
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario_token = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    cursor = con.cursor()
+    # 2. Verifica se o serviço existe e pertence ao usuário do token
+    cursor.execute("SELECT ID_USUARIO FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
+    serv = cursor.fetchone()
+    if not serv:
+        cursor.close()
+        return jsonify({'error': 'Serviço não encontrado'}), 404
+    if serv[0] != id_usuario_token:
+        cursor.close()
+        return jsonify({'error': 'Permissão negada. Só o dono do serviço pode excluir.'}), 403
+
+    try:
+        # 3. Deleta o serviço no banco
+        cursor.execute("DELETE FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
+        con.commit()
+        cursor.close()
+
+        # 4. Remove imagem associada (se existir)
+        upload_root = app.config.get('UPLOAD_FOLDER')
+        if upload_root:
+            caminho_imagem = os.path.join(upload_root, "Servicos", f"{id_servico}.jpeg")
+            if os.path.exists(caminho_imagem):
+                os.remove(caminho_imagem)
+
+        return jsonify({'message': 'Serviço excluído com sucesso'}), 200
+    except Exception as e:
+        con.rollback()
+        if 'cursor' in locals():
+            cursor.close()
+        return jsonify({'error': 'Erro ao excluir serviço', 'details': str(e)}), 500
+
+
+@app.route('/servico/admlink', methods=['POST'])
+def vincular_servico_adm():
+    # Autenticação do usuário
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario_autor = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    # Verifica se o usuário é admin
+    cursor = con.cursor()
+    cursor.execute("SELECT CARGO FROM USUARIO WHERE ID_USUARIO = ? AND STATUS = 'A'", (id_usuario_autor,))
+    resultado = cursor.fetchone()
+    if not resultado or str(resultado[0]) != '4':
+        cursor.close()
+        return jsonify({"error": "Apenas administradores podem criar vínculos de serviço."}), 403
+
+    # Recebe os dados
+    data = request.get_json()
+    if not data:
+        cursor.close()
+        return jsonify({"error": "JSON inválido"}), 400
+
+    id_usuario_destino = data.get('id_usuario')
+    nome = data.get('nome')
+    valor = data.get('valor')
+    descricao = data.get('descricao')
+
+    # Validação
+    if not id_usuario_destino or not nome or not valor:
+        cursor.close()
+        return jsonify({"error": "Campos obrigatórios: id_usuario, nome e valor"}), 400
+
+    # Verifica se o usuário destino existe, ativo e é fornecedor (cargo=2)
+    cursor.execute("SELECT CARGO FROM USUARIO WHERE ID_USUARIO = ? AND STATUS = 'A'", (id_usuario_destino,))
+    cargo_usuario_destino = cursor.fetchone()
+    if not cargo_usuario_destino:
+        cursor.close()
+        return jsonify({"error": "Usuário destino não encontrado ou inativo."}), 404
+
+    if str(cargo_usuario_destino[0]) != '2':
+        cursor.close()
+        return jsonify({"error": "Serviço só pode ser atribuído a usuários fornecedores (cargo=2)."}), 400
+
+    try:
+        # Insere o serviço atribuindo o id_usuario passado
+        sql_servico = """
+        INSERT INTO SERVICOS (ID_USUARIO, NOME, VALOR, DESCRICAO)
+        VALUES (?, ?, ?, ?)
+        """
+        cursor.execute(sql_servico, (id_usuario_destino, nome, valor, descricao))
+        con.commit()
+
+        id_servico_inserido = cursor.lastrowid
+
+        cursor.close()
+
+        return jsonify({
+            "message": "Serviço criado e vinculado ao fornecedor com sucesso!",
+            "servico": {
+                'id_servico': id_servico_inserido,
+                'id_usuario': id_usuario_destino,
+                'nome': nome,
+                'valor': valor,
+                'descricao': descricao
+            }
+        }), 201
+
+    except Exception as e:
+        con.rollback()
+        if 'cursor' in locals():
+            cursor.close()
+        return jsonify({"error": "Erro ao criar serviço para usuário", "details": str(e)}), 500
