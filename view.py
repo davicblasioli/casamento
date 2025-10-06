@@ -1,11 +1,9 @@
-from flask import Flask, request, jsonify
+from flask import request, jsonify
 from datetime import datetime
 from main import app, con  # Mantendo a importação conforme seu setup
-from flask_bcrypt import Bcrypt, check_password_hash, generate_password_hash
-from flask_cors import CORS
+from flask_bcrypt import Bcrypt
 import re
 import bcrypt
-import fdb
 import requests
 import jwt
 import os
@@ -248,6 +246,85 @@ def usuario_post():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/usuarios/<int:id>', methods=['PUT'])
+def usuario_put(id):
+    cursor = con.cursor()
+    cursor.execute("SELECT ID_USUARIO, CARGO FROM USUARIO WHERE ID_USUARIO = ?", (id,))
+    usuario_data = cursor.fetchone()
+    if not usuario_data:
+        cursor.close()
+        return jsonify({'error': 'Usuário não encontrado'}), 404
+
+    cargo = str(usuario_data[1])
+    nome = request.form.get('nome')
+    email = request.form.get('email')
+    telefone = request.form.get('telefone')
+    data_nascimento_str = request.form.get('data_nascimento')
+    cep = request.form.get('cep')
+    categoria = request.form.get('categoria')
+    nome_marca = request.form.get('nome_marca')
+    imagem = request.files.get('imagem')
+
+    # Validação mínima
+    if not nome or not email:
+        cursor.close()
+        return jsonify({"error": "Nome e email obrigatórios."}), 400
+
+    cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ? AND ID_USUARIO <> ?", (email, id))
+    email_existente = cursor.fetchone()
+    if email_existente:
+        cursor.close()
+        return jsonify({"error": "Este email já está em uso por outro usuário."}), 400
+
+    try:
+        data_nascimento = (
+            datetime.strptime(data_nascimento_str, '%d-%m-%Y').date()
+            if data_nascimento_str else None
+        )
+    except Exception:
+        cursor.close()
+        return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
+
+    # Atualiza CEP independente do cargo
+    if cep:
+        cursor.execute('UPDATE ENDERECO SET CEP = ? WHERE ID_USUARIO = ?', (cep, id))
+
+    # Campos básicos do usuário
+    update_fields = ["NOME = ?", "EMAIL = ?", "TELEFONE = ?", "DATA_NASCIMENTO = ?"]
+    update_values = [nome, email, telefone, data_nascimento]
+
+    # Se fornecedor, autoriza editar categoria e nome da marca
+    if cargo == '2':
+        update_fields += ["CATEGORIA = ?", "NOME_MARCA = ?"]
+        update_values += [categoria, nome_marca]
+
+    update_values.append(id)
+    sql_update = f"UPDATE USUARIO SET {', '.join(update_fields)} WHERE ID_USUARIO = ?"
+    cursor.execute(sql_update, update_values)
+    con.commit()
+    cursor.close()
+
+    if imagem:
+        nome_imagem = f"{id}.jpeg"
+        pasta_destino = os.path.join(app.config['UPLOAD_FOLDER'], "Usuarios")
+        os.makedirs(pasta_destino, exist_ok=True)
+        imagem.save(os.path.join(pasta_destino, nome_imagem))
+
+    return jsonify({
+        'message': 'Usuário editado com sucesso!',
+        'usuario': {
+            'id_usuario': id,
+            'nome': nome,
+            'email': email,
+            'telefone': telefone,
+            'data_nascimento': data_nascimento_str,
+            'cep': cep,
+            'categoria': categoria if cargo == '2' else None,
+            'nome_marca': nome_marca if cargo == '2' else None
+        }
+    })
+
+
 # Troque pela sua chave secreta segura!
 JWT_EXPIRE_MINUTES = 60
 
@@ -327,48 +404,41 @@ def login():
 
 @app.route('/fornecedores', methods=['GET'])
 def fornecedores():
-    pagina = int(request.args.get('pagina', 1))
-    quantidade_por_pagina = 10
-
-    primeiro_fornecedor = (pagina * quantidade_por_pagina) - quantidade_por_pagina + 1
-    ultimo_fornecedor = pagina * quantidade_por_pagina
-
     cur = con.cursor()
-    query = f'''
-        SELECT id_usuario, nome, email, telefone, data_nascimento, cargo, categoria, nome_marca, status
-        FROM usuario
-        WHERE cargo = '2'
-        ROWS {primeiro_fornecedor} TO {ultimo_fornecedor}
-    '''
-    cur.execute(query)
-    fornecedores = cur.fetchall()
 
-    cur.execute("SELECT COUNT(*) FROM usuario WHERE cargo = '2'")
-    total_fornecedores = cur.fetchone()[0]
-    total_paginas = (total_fornecedores + quantidade_por_pagina - 1) // quantidade_por_pagina
+    cur.execute(
+        "SELECT id_usuario, nome, email, telefone, data_nascimento, cargo, categoria, nome_marca, status FROM usuario WHERE cargo = 2")
+    usuarios = cur.fetchall()
+    cur.close()
+    usuarios_dic = []
 
-    fornecedores_dic = []
-    for f in fornecedores:
-        fornecedores_dic.append({
-            'id_usuario': f[0],
-            'nome': f[1],
-            'email': f[2],
-            'telefone': f[3],
-            'data_nascimento': f[4],
-            'cargo': f[5],
-            'categoria': f[6],
-            'nome_marca': f[7],
-            'status': f[8]
+    for usuario in usuarios:
+        id_usuario = usuario[0]
+        nome = usuario[1]
+        email = usuario[2]
+        telefone = usuario[3]
+        data_nascimento = usuario[4]
+        cargo = usuario[5]
+        categoria = usuario[6]
+        nome_marca = usuario[7]
+        status = usuario[8]
+
+        usuarios_dic.append({
+            'id_usuario': id_usuario,
+            'nome': nome,
+            'email': email,
+            'telefone': telefone,
+            'data_nascimento': data_nascimento,
+            'cargo': cargo,
+            'categoria': categoria,
+            'nome_marca': nome_marca,
+            'status': status
         })
 
-    return jsonify(
-        mensagem='Lista de Fornecedores',
-        pagina_atual=pagina,
-        total_paginas=total_paginas,
-        total_usuarios=total_fornecedores,
-        fornecedores=fornecedores_dic
-    )
-
+    if usuarios_dic:
+        return jsonify(mensagem='Registro de Cadastro de Usuários', usuarios=usuarios_dic)
+    else:
+        return jsonify(mensagem='Nenhum dado encontrado')
 
 @app.route('/fornecedor/<int:id_fornecedor>', methods=['GET'])
 def fornecedor_por_id(id_fornecedor):
@@ -416,7 +486,6 @@ def servico_post():
         return jsonify({'mensagem': 'Token expirado'}), 401
     except jwt.InvalidTokenError:
         return jsonify({'mensagem': 'Token inválido'}), 401
-
 
     # 2. Buscar o usuário no banco e verificar o cargo
     cursor = con.cursor()
