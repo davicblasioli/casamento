@@ -103,6 +103,59 @@ def usuario():
     )
 
 
+@app.route('/usuario/<int:id>', methods=['GET'])
+def usuario_por_id(id):
+    cursor = con.cursor()
+    cursor.execute('''
+        SELECT 
+            u.ID_USUARIO, 
+            u.NOME, 
+            u.EMAIL, 
+            u.TELEFONE, 
+            u.DATA_NASCIMENTO, 
+            u.CARGO, 
+            u.CATEGORIA, 
+            u.NOME_MARCA, 
+            u.STATUS,
+            e.CEP
+        FROM USUARIO u
+        LEFT JOIN ENDERECO e ON u.ID_USUARIO = e.ID_USUARIO
+        WHERE u.ID_USUARIO = ?
+    ''', (id,))
+
+    usuario = cursor.fetchone()
+    cursor.close()
+
+    if not usuario:
+        return jsonify({"error": "Usuário não encontrado."}), 404
+
+    # Formata a data de nascimento para DD-MM-YYYY
+    data_nascimento = None
+    if usuario[4]:
+        if isinstance(usuario[4], str):
+            data_nascimento = usuario[4]
+        else:
+            data_nascimento = usuario[4].strftime('%d-%m-%Y')
+
+    usuario_dic = {
+        'id_usuario': usuario[0],
+        'nome': usuario[1],
+        'email': usuario[2],
+        'telefone': usuario[3],
+        'data_nascimento': data_nascimento,
+        'cargo': usuario[5],
+        'categoria': usuario[6],
+        'nome_marca': usuario[7],
+        'status': usuario[8],
+        'cep': usuario[9]
+    }
+
+    return jsonify(
+        mensagem='Usuário encontrado',
+        usuario=usuario_dic
+    )
+
+
 @app.route('/usuario', methods=['POST'])
 def usuario_post():
     data = request.get_json()
@@ -406,8 +459,23 @@ def login():
 def fornecedores():
     cur = con.cursor()
 
-    cur.execute(
-        "SELECT id_usuario, nome, email, telefone, data_nascimento, cargo, categoria, nome_marca, status FROM usuario WHERE cargo = 2")
+    cur.execute("""
+        SELECT 
+            u.ID_USUARIO, 
+            u.NOME, 
+            u.EMAIL, 
+            u.TELEFONE, 
+            u.DATA_NASCIMENTO, 
+            u.CARGO, 
+            u.CATEGORIA, 
+            u.NOME_MARCA, 
+            u.STATUS,
+            e.CEP
+        FROM USUARIO u
+        LEFT JOIN ENDERECO e ON u.ID_USUARIO = e.ID_USUARIO
+        WHERE u.CARGO = 2
+    """)
+
     usuarios = cur.fetchall()
     cur.close()
     usuarios_dic = []
@@ -422,6 +490,7 @@ def fornecedores():
         categoria = usuario[6]
         nome_marca = usuario[7]
         status = usuario[8]
+        cep = usuario[9]
 
         usuarios_dic.append({
             'id_usuario': id_usuario,
@@ -432,13 +501,187 @@ def fornecedores():
             'cargo': cargo,
             'categoria': categoria,
             'nome_marca': nome_marca,
-            'status': status
+            'status': status,
+            'cep': cep
         })
 
     if usuarios_dic:
         return jsonify(mensagem='Registro de Cadastro de Usuários', usuarios=usuarios_dic)
     else:
         return jsonify(mensagem='Nenhum dado encontrado')
+
+
+@app.route('/noivos', methods=['GET'])
+def noivos():
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT 
+            u.ID_USUARIO, 
+            u.NOME, 
+            u.EMAIL, 
+            u.TELEFONE, 
+            u.DATA_NASCIMENTO, 
+            u.CARGO, 
+            u.CATEGORIA, 
+            u.NOME_MARCA, 
+            u.STATUS,
+            e.CEP
+        FROM USUARIO u
+        LEFT JOIN ENDERECO e ON u.ID_USUARIO = e.ID_USUARIO
+        WHERE u.CARGO = 1
+    """)
+
+    usuarios = cur.fetchall()
+    cur.close()
+    usuarios_dic = []
+
+    for usuario in usuarios:
+        id_usuario = usuario[0]
+        nome = usuario[1]
+        email = usuario[2]
+        telefone = usuario[3]
+        data_nascimento = usuario[4]
+        cargo = usuario[5]
+        categoria = usuario[6]
+        nome_marca = usuario[7]
+        status = usuario[8]
+        cep = usuario[9]
+
+        usuarios_dic.append({
+            'id_usuario': id_usuario,
+            'nome': nome,
+            'email': email,
+            'telefone': telefone,
+            'data_nascimento': data_nascimento,
+            'cargo': cargo,
+            'categoria': categoria,
+            'nome_marca': nome_marca,
+            'status': status,
+            'cep': cep
+        })
+
+    if usuarios_dic:
+        return jsonify(mensagem='Registro de Cadastro de Usuários', usuarios=usuarios_dic)
+    else:
+        return jsonify(mensagem='Nenhum dado encontrado')
+
+
+
+@app.route('/administradores', methods=['GET'])
+def administradores():
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT 
+            u.ID_USUARIO, 
+            u.NOME, 
+            u.EMAIL, 
+            u.TELEFONE, 
+            u.DATA_NASCIMENTO, 
+            u.CARGO, 
+            u.CATEGORIA, 
+            u.NOME_MARCA, 
+            u.STATUS,
+            e.CEP
+        FROM USUARIO u
+        LEFT JOIN ENDERECO e ON u.ID_USUARIO = e.ID_USUARIO
+        WHERE u.CARGO = 4
+    """)
+
+    usuarios = cur.fetchall()
+    cur.close()
+    usuarios_dic = []
+
+    for usuario in usuarios:
+        id_usuario = usuario[0]
+        nome = usuario[1]
+        email = usuario[2]
+        telefone = usuario[3]
+        data_nascimento = usuario[4]
+        cargo = usuario[5]
+        categoria = usuario[6]
+        nome_marca = usuario[7]
+        status = usuario[8]
+        cep = usuario[9]
+
+        usuarios_dic.append({
+            'id_usuario': id_usuario,
+            'nome': nome,
+            'email': email,
+            'telefone': telefone,
+            'data_nascimento': data_nascimento,
+            'cargo': cargo,
+            'categoria': categoria,
+            'nome_marca': nome_marca,
+            'status': status,
+            'cep': cep
+        })
+
+    if usuarios_dic:
+        return jsonify(mensagem='Registro de Cadastro de Usuários', usuarios=usuarios_dic)
+    else:
+        return jsonify(mensagem='Nenhum dado encontrado')
+
+
+
+
+@app.route('/cerimonialistas', methods=['GET'])
+def cerimonialistas():
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT 
+            u.ID_USUARIO, 
+            u.NOME, 
+            u.EMAIL, 
+            u.TELEFONE, 
+            u.DATA_NASCIMENTO, 
+            u.CARGO, 
+            u.CATEGORIA, 
+            u.NOME_MARCA, 
+            u.STATUS,
+            e.CEP
+        FROM USUARIO u
+        LEFT JOIN ENDERECO e ON u.ID_USUARIO = e.ID_USUARIO
+        WHERE u.CARGO = 3
+    """)
+
+    usuarios = cur.fetchall()
+    cur.close()
+    usuarios_dic = []
+
+    for usuario in usuarios:
+        id_usuario = usuario[0]
+        nome = usuario[1]
+        email = usuario[2]
+        telefone = usuario[3]
+        data_nascimento = usuario[4]
+        cargo = usuario[5]
+        categoria = usuario[6]
+        nome_marca = usuario[7]
+        status = usuario[8]
+        cep = usuario[9]
+
+        usuarios_dic.append({
+            'id_usuario': id_usuario,
+            'nome': nome,
+            'email': email,
+            'telefone': telefone,
+            'data_nascimento': data_nascimento,
+            'cargo': cargo,
+            'categoria': categoria,
+            'nome_marca': nome_marca,
+            'status': status,
+            'cep': cep
+        })
+
+    if usuarios_dic:
+        return jsonify(mensagem='Registro de Cadastro de Usuários', usuarios=usuarios_dic)
+    else:
+        return jsonify(mensagem='Nenhum dado encontrado')
+
+
 
 
 @app.route('/adms', methods=['GET'])
@@ -788,7 +1031,7 @@ def servico_delete(id_servico):
         return jsonify({'error': 'Erro ao excluir serviço', 'details': str(e)}), 500
 
 
-@app.route('/servico/admlink', methods=['POST'])
+@app.route('/servicoadm', methods=['POST'])
 def vincular_servico_adm():
     # Autenticação do usuário
     token = request.headers.get('Authorization')
@@ -812,16 +1055,12 @@ def vincular_servico_adm():
         cursor.close()
         return jsonify({"error": "Apenas administradores podem criar vínculos de serviço."}), 403
 
-    # Recebe os dados
-    data = request.get_json()
-    if not data:
-        cursor.close()
-        return jsonify({"error": "JSON inválido"}), 400
-
-    id_usuario_destino = data.get('id_usuario')
-    nome = data.get('nome')
-    valor = data.get('valor')
-    descricao = data.get('descricao')
+    # Recebe os dados via request.form
+    id_usuario_destino = request.form.get('id_usuario')
+    nome = request.form.get('nome')
+    valor = request.form.get('valor')
+    descricao = request.form.get('descricao')
+    imagem = request.files.get('imagem')
 
     # Validação
     if not id_usuario_destino or not nome or not valor:
@@ -837,20 +1076,29 @@ def vincular_servico_adm():
 
     if str(cargo_usuario_destino[0]) != '2':
         cursor.close()
-        return jsonify({"error": "Serviço só pode ser atribuído a usuários fornecedores (cargo=2)."}), 400
+        return jsonify({"error": "Serviço só pode ser atribuído a usuários fornecedores."}), 400
 
     try:
-        # Insere o serviço atribuindo o id_usuario passado
+        # Insere o serviço usando RETURNING para obter o ID
         sql_servico = """
         INSERT INTO SERVICOS (ID_USUARIO, NOME, VALOR, DESCRICAO)
         VALUES (?, ?, ?, ?)
+        RETURNING ID_SERVICO
         """
         cursor.execute(sql_servico, (id_usuario_destino, nome, valor, descricao))
+
+        # Obtém o ID retornado pela cláusula RETURNING
+        id_servico_inserido = cursor.fetchone()[0]
+
         con.commit()
-
-        id_servico_inserido = cursor.lastrowid
-
         cursor.close()
+
+        # Salva a imagem após o commit do banco de dados
+        if imagem:
+            nome_imagem = f"{id_servico_inserido}.jpeg"
+            pasta_destino = os.path.join(app.config['UPLOAD_FOLDER'], "Servicos")
+            os.makedirs(pasta_destino, exist_ok=True)
+            imagem.save(os.path.join(pasta_destino, nome_imagem))
 
         return jsonify({
             "message": "Serviço criado e vinculado ao fornecedor com sucesso!",
@@ -859,7 +1107,8 @@ def vincular_servico_adm():
                 'id_usuario': id_usuario_destino,
                 'nome': nome,
                 'valor': valor,
-                'descricao': descricao
+                'descricao': descricao,
+                'imagem': nome_imagem
             }
         }), 201
 
