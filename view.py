@@ -13,6 +13,10 @@ app.config.from_pyfile('config.py')
 senha_secreta = app.config['SECRET_KEY']
 
 
+# Troque pela sua chave secreta segura!
+JWT_EXPIRE_MINUTES = 60
+
+
 # Função para gerar token JWT
 def generate_token(user_id, email):
     if not os.path.exists(app.config['UPLOAD_FOLDER']):
@@ -376,15 +380,6 @@ def usuario_put(id):
             'nome_marca': nome_marca if cargo == '2' else None
         }
     })
-
-
-# Troque pela sua chave secreta segura!
-JWT_EXPIRE_MINUTES = 60
-
-def generate_token(user_id, email):
-    payload = {'id_usuario': user_id, 'email': email}
-    token = jwt.encode(payload, senha_secreta, algorithm='HS256')
-    return token
 
 
 @app.route('/login', methods=['POST'])
@@ -842,16 +837,24 @@ def servico_post():
 
         cursor.execute(sql_select, (id_usuario, nome, valor, descricao))
         id_servico = cursor.fetchone()[0]
-
-
         con.commit()
+
+        # Salvar a imagem se for enviada
+        imagem_path = None
+        if imagem:
+            nome_imagem = f"{id_servico}.jpeg"
+            pasta_destino = os.path.join(app.config['UPLOAD_FOLDER'], "Servicos")
+            os.makedirs(pasta_destino, exist_ok=True)
+            imagem_path = os.path.join(pasta_destino, nome_imagem)
+            imagem.save(imagem_path)
+
         cursor.close()
 
         if imagem:
-            nome_imagem = f"{id}.jpeg"
-            pasta_destino = os.path.join(app.config['UPLOAD_FOLDER'], "Servicos")
-            os.makedirs(pasta_destino, exist_ok=True)
-            imagem.save(os.path.join(pasta_destino, nome_imagem))
+            print(f"Recebido arquivo de imagem: {imagem.filename}")
+            # salvar imagem...
+        else:
+            print("Nenhuma imagem recebida")
 
         return jsonify({
             "message": "Serviço cadastrado com sucesso!",
@@ -860,7 +863,7 @@ def servico_post():
                 'nome': nome,
                 'valor': valor,
                 'descricao': descricao,
-                'imagem_salva': True if imagem else False,
+                'imagem_salva': f"/static/uploads/Servico/{id_servico}.jpeg",
                 'id_servico': id_servico
             }
         }), 201
@@ -873,7 +876,6 @@ def servico_post():
             "error": "Erro ao cadastrar serviço",
             "details": str(e)
         }), 500
-
 
 
 @app.route('/servico/<int:id_servico>', methods=['PUT'])
@@ -1117,3 +1119,45 @@ def vincular_servico_adm():
         if 'cursor' in locals():
             cursor.close()
         return jsonify({"error": "Erro ao criar serviço para usuário", "details": str(e)}), 500
+
+
+@app.route('/meus-servicos', methods=['GET'])
+def meus_servicos_get():
+    # 1. Verifica se há um token no cabeçalho Authorization
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify(mensagem='Token ausente'), 401
+
+    # 2. Remove o prefixo 'Bearer ' se existir
+    token = remover_bearer(token)
+
+    try:
+        # 3. Decodifica o token com a mesma 'senha_secreta' usada no generate_token
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario_logado = payload.get('id_usuario')
+
+    except jwt.ExpiredSignatureError:
+        return jsonify(mensagem='Token expirado'), 401
+    except jwt.InvalidTokenError:
+        return jsonify(mensagem='Token inválido'), 401
+
+    # 4. Conecta ao banco para buscar os serviços do usuário
+    cursor = con.cursor()
+    query = "SELECT ID_USUARIO, NOME, VALOR, DESCRICAO FROM SERVICOS WHERE ID_USUARIO = ?"
+    cursor.execute(query, (id_usuario_logado,))
+    servicos = cursor.fetchall()
+    cursor.close()
+
+    servicos_lista = []
+    for servico in servicos:
+        servicos_lista.append({
+            'id_usuario': servico[0],
+            'nome': servico[1],
+            'valor': servico[2],
+            'descricao': servico[3]
+        })
+
+    if servicos_lista:
+        return jsonify(mensagem='Seus serviços cadastrados', servicos=servicos_lista)
+    else:
+        return jsonify(mensagem='Você ainda não cadastrou nenhum serviço', servicos=[])
