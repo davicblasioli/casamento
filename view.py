@@ -1121,8 +1121,9 @@ def vincular_servico_adm():
         return jsonify({"error": "Erro ao criar serviço para usuário", "details": str(e)}), 500
 
 
-@app.route('/meus-servicos', methods=['GET'])
-def meus_servicos_get():
+@app.route('/meu-servico/<int:id_servico>', methods=['GET'])
+def servico_por_id(id_servico):
+
     # Verifica se há um token no cabeçalho Authorization
     token = request.headers.get('Authorization')
     if not token:
@@ -1141,25 +1142,35 @@ def meus_servicos_get():
     except jwt.InvalidTokenError:
         return jsonify(mensagem='Token inválido'), 401
 
-    # Conecta ao banco para buscar os serviços do usuário
     cursor = con.cursor()
-    query = "SELECT ID_SERVICO, ID_USUARIO, NOME, VALOR, DESCRICAO FROM SERVICOS WHERE ID_USUARIO = ?"
-    cursor.execute(query, (id_usuario_logado,))
-    servicos = cursor.fetchall()
+    cursor.execute(
+        """
+        SELECT 
+            ID_SERVICO, 
+            ID_USUARIO, 
+            NOME, 
+            VALOR, 
+            DESCRICAO 
+        FROM SERVICOS 
+        WHERE ID_SERVICO = ?
+        """,
+        (id_servico,)
+    )
+    servico = cursor.fetchone()
     cursor.close()
 
-    servicos_lista = []
-    for servico in servicos:
-        servicos_lista.append({
-            'id_servico': servico[0], # O ID do serviço específico
-            'id_usuario': servico[1],
-            'nome': servico[2],
-            'valor': servico[3],
-            'descricao': servico[4]
-        })
+    if not servico:
+        return jsonify({"error": "Serviço não encontrado."}), 404
 
-    if servicos_lista:
-        return jsonify(mensagem='Seus serviços cadastrados', servicos=servicos_lista)
-    else:
+    servico_dic = {
+        'id_servico': servico[0],
+        'id_usuario': servico[1],
+        'nome': servico[2],
+        'valor': servico[3],
+        'descricao': servico[4]
+    }
 
-        return jsonify(mensagem='Você ainda não cadastrou nenhum serviço', servicos=[])
+    return jsonify(
+        mensagem='Serviço encontrado',
+        servico=servico_dic
+    )
