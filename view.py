@@ -1121,30 +1121,37 @@ def vincular_servico_adm():
         return jsonify({"error": "Erro ao criar serviço para usuário", "details": str(e)}), 500
 
 
-@app.route('/meu-servico/<int:id_usuario>', methods=['GET'])
-def servico_por_id(id_usuario):
+@app.route('/meus-servicos', methods=['GET'])
+def meus_servicos():
 
-    # Verifica se há um token no cabeçalho Authorization
+    # 1. Verifica se há um token no cabeçalho Authorization
     token = request.headers.get('Authorization')
     if not token:
         return jsonify(mensagem='Token ausente'), 401
 
-    # Remove o prefixo 'Bearer ' se existir
+    # 2. Remove o prefixo 'Bearer ' se existir
     token = remover_bearer(token)
 
     try:
-        # Decodifica o token com a mesma 'senha_secreta' usada no generate_token
+        # 3. Decodifica o token e pega o ID do usuário LOGADO
         payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
         id_usuario_logado = payload.get('id_usuario')
+        if not id_usuario_logado:
+             return jsonify(mensagem='Token inválido (não contém id_usuario)'), 401
 
     except jwt.ExpiredSignatureError:
         return jsonify(mensagem='Token expirado'), 401
     except jwt.InvalidTokenError:
         return jsonify(mensagem='Token inválido'), 401
 
+    # 4. Conecta ao banco
     cursor = con.cursor()
-    cursor.execute(
-        """
+    
+    # 5. A QUERY CORRETA:
+    #    - SELECIONA os campos que você quer
+    #    - BUSCA por ID_USUARIO
+    #    - PASSA o id_usuario_logado (vindo do TOKEN) como parâmetro
+    query = """
         SELECT 
             ID_SERVICO, 
             ID_USUARIO, 
@@ -1152,25 +1159,30 @@ def servico_por_id(id_usuario):
             VALOR, 
             DESCRICAO 
         FROM SERVICOS 
-        WHERE ID_SERVICO = ?
-        """,
-        (id_usuario,)
-    )
-    servico = cursor.fetchone()
+        WHERE ID_USUARIO = ? 
+    """
+    cursor.execute(query, (id_usuario_logado,))
+    
+    # 6. USA fetchall() para pegar TODOS os serviços desse usuário
+    servicos = cursor.fetchall()
     cursor.close()
 
-    if not servico:
-        return jsonify({"error": "Serviço não encontrado."}), 404
+    # 7. Transforma os resultados (lista de tuplas) em uma lista de dicionários
+    servicos_lista = []
+    for servico in servicos:
+        servicos_lista.append({
+            'id_servico': servico[0],
+            'id_usuario': servico[1],
+            'nome': servico[2],
+            'valor': servico[3],
+            'descricao': servico[4]
+        })
 
-    servico_dic = {
-        'id_servico': servico[0],
-        'id_usuario': servico[1],
-        'nome': servico[2],
-        'valor': servico[3],
-        'descricao': servico[4]
-    }
+    # 8. Retorna a lista completa de serviços
+    #    (O script que eu te passei na resposta anterior já sabe como ler isso)
+    if servicos_lista:
+        return jsonify(mensagem='Seus serviços cadastrados', servicos=servicos_lista)
+    else:
+        # Se não tiver serviços, retorna uma lista vazia
+        return jsonify(mensagem='Você ainda não cadastrou nenhum serviço', servicos=[])
 
-    return jsonify(
-        mensagem='Serviço encontrado',
-        servico=servico_dic
-    )
