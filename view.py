@@ -1121,8 +1121,8 @@ def vincular_servico_adm():
         return jsonify({"error": "Erro ao criar serviço para usuário", "details": str(e)}), 500
 
 
-@app.route('/meu-servico/<int:id_servico>', methods=['GET'])
-def servico_por_id(id_servico):
+@app.route('/meu-servico/<int:id_usuario>', methods=['GET'])
+def servico_por_id(id_usuario):
 
     # Verifica se há um token no cabeçalho Authorization
     token = request.headers.get('Authorization')
@@ -1154,7 +1154,7 @@ def servico_por_id(id_servico):
         FROM SERVICOS 
         WHERE ID_SERVICO = ?
         """,
-        (id_servico,)
+        (id_usuario,)
     )
     servico = cursor.fetchone()
     cursor.close()
