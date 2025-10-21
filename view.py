@@ -1123,16 +1123,16 @@ def vincular_servico_adm():
 
 @app.route('/meus-servicos', methods=['GET'])
 def meus_servicos_get():
-    # 1. Verifica se há um token no cabeçalho Authorization
+    # Verifica se há um token no cabeçalho Authorization
     token = request.headers.get('Authorization')
     if not token:
         return jsonify(mensagem='Token ausente'), 401
 
-    # 2. Remove o prefixo 'Bearer ' se existir
+    # Remove o prefixo 'Bearer ' se existir
     token = remover_bearer(token)
 
     try:
-        # 3. Decodifica o token com a mesma 'senha_secreta' usada no generate_token
+        # Decodifica o token com a mesma 'senha_secreta' usada no generate_token
         payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
         id_usuario_logado = payload.get('id_usuario')
 
@@ -1141,9 +1141,9 @@ def meus_servicos_get():
     except jwt.InvalidTokenError:
         return jsonify(mensagem='Token inválido'), 401
 
-    # 4. Conecta ao banco para buscar os serviços do usuário
+    # Conecta ao banco para buscar os serviços do usuário
     cursor = con.cursor()
-    query = "SELECT ID_USUARIO, NOME, VALOR, DESCRICAO FROM SERVICOS WHERE ID_USUARIO = ?"
+    query = "SELECT ID_SERVICO, ID_USUARIO, NOME, VALOR, DESCRICAO FROM SERVICOS WHERE ID_USUARIO = ?"
     cursor.execute(query, (id_usuario_logado,))
     servicos = cursor.fetchall()
     cursor.close()
@@ -1151,13 +1151,15 @@ def meus_servicos_get():
     servicos_lista = []
     for servico in servicos:
         servicos_lista.append({
-            'id_usuario': servico[0],
-            'nome': servico[1],
-            'valor': servico[2],
-            'descricao': servico[3]
+            'id_servico': servico[0], # O ID do serviço específico
+            'id_usuario': servico[1],
+            'nome': servico[2],
+            'valor': servico[3],
+            'descricao': servico[4]
         })
 
     if servicos_lista:
         return jsonify(mensagem='Seus serviços cadastrados', servicos=servicos_lista)
     else:
+
         return jsonify(mensagem='Você ainda não cadastrou nenhum serviço', servicos=[])
