@@ -1186,3 +1186,60 @@ def meus_servicos():
         # Se não tiver serviços, retorna uma lista vazia
         return jsonify(mensagem='Você ainda não cadastrou nenhum serviço', servicos=[])
 
+
+@app.route('/meu-servico/<int:id_servico>', methods=['GET'])
+def servico_por_id(id_servico):
+
+    # Verifica se há um token no cabeçalho Authorization
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify(mensagem='Token ausente'), 401
+
+    # Remove o prefixo 'Bearer ' se existir
+    token = remover_bearer(token)
+
+    try:
+        # Decodifica o token com a mesma 'senha_secreta' usada no generate_token
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario_logado = payload.get('id_usuario')
+
+    except jwt.ExpiredSignatureError:
+        return jsonify(mensagem='Token expirado'), 401
+    except jwt.InvalidTokenError:
+        return jsonify(mensagem='Token inválido'), 401
+
+    cursor = con.cursor()
+
+    cursor.execute(
+        """
+        SELECT 
+            ID_SERVICO, 
+            ID_USUARIO, 
+            NOME, 
+            VALOR, 
+            DESCRICAO 
+        FROM SERVICOS 
+
+        WHERE ID_SERVICO = ?
+        """,
+        (id_servico,)
+    )
+
+    servico = cursor.fetchone()
+    cursor.close()
+
+    if not servico:
+        return jsonify({"error": "Serviço não encontrado."}), 404
+
+    servico_dic = {
+        'id_servico': servico[0],
+        'id_usuario': servico[1],
+        'nome': servico[2],
+        'valor': servico[3],
+        'descricao': servico[4]
+    }
+
+    return jsonify(
+        mensagem='Serviço encontrado',
+        servico=servico_dic
+    )
