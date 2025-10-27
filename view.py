@@ -779,15 +779,13 @@ def servico_por_id(id_servico):
     )
 
 
-
 @app.route('/servico', methods=['GET'])
 def servico_get():
     cursor = con.cursor()
-    cursor.execute("""
-        SELECT S.ID_SERVICO, S.ID_USUARIO, S.NOME, S.VALOR, S.DESCRICAO, U.NOME AS NOME_FORNECEDOR
-        FROM SERVICOS S
-        JOIN USUARIO U ON S.ID_USUARIO = U.ID_USUARIO
-    """)
+    cursor.execute(
+        # 1. GARANTA QUE 'NOME' ESTÁ NO SELECT
+        "SELECT ID_SERVICO, ID_USUARIO, NOME, VALOR, DESCRICAO FROM SERVICOS"
+    )
     servicos = cursor.fetchall()
     cursor.close()
 
@@ -796,17 +794,15 @@ def servico_get():
         servicos_lista.append({
             'id_servico': servico[0],
             'id_usuario': servico[1],
-            'nome_servico': servico[2],
+            'nome': servico[2],       # 2. GARANTA QUE A CHAVE 'nome' EXISTE AQUI
             'valor': servico[3],
-            'descricao': servico[4],
-            'nome_fornecedor': servico[5]
+            'descricao': servico[4]
         })
 
     if servicos_lista:
         return jsonify(mensagem='Lista de serviços cadastrados', servicos=servicos_lista)
     else:
         return jsonify(mensagem='Nenhum serviço encontrado')
-
 
 @app.route('/servico', methods=['POST'])
 def servico_post():
