@@ -751,22 +751,55 @@ def fornecedor_por_id(id_fornecedor):
     )
 
 
+@app.route('/servicoid/<int:id_servico>', methods=['GET'])
+def servico_por_id(id_servico):
+    cursor = con.cursor()
+    cursor.execute('''
+        SELECT id_servico, id_usuario, nome, valor, descricao
+        FROM servicos
+        WHERE id_servico = ?
+    ''', (id_servico,))
+    servico = cursor.fetchone()
+    cursor.close()
+
+    if not servico:
+        return jsonify({"error": "Serviço não encontrado."}), 404
+
+    servico_dic = {
+        'id_servico': servico[0],
+        'id_usuario': servico[1],
+        'nome': servico[2],
+        'valor': servico[3],
+        'descricao': servico[4]
+    }
+
+    return jsonify(
+        mensagem='Serviço encontrado',
+        servico=servico_dic
+    )
+
+
+
 @app.route('/servico', methods=['GET'])
 def servico_get():
     cursor = con.cursor()
-    cursor.execute(
-        "SELECT ID_USUARIO, NOME, VALOR, DESCRICAO FROM SERVICOS"
-    )
+    cursor.execute("""
+        SELECT S.ID_SERVICO, S.ID_USUARIO, S.NOME, S.VALOR, S.DESCRICAO, U.NOME AS NOME_FORNECEDOR
+        FROM SERVICOS S
+        JOIN USUARIO U ON S.ID_USUARIO = U.ID_USUARIO
+    """)
     servicos = cursor.fetchall()
     cursor.close()
 
     servicos_lista = []
     for servico in servicos:
         servicos_lista.append({
-            'id_usuario': servico[0],
-            'nome': servico[1],
-            'valor': servico[2],
-            'descricao': servico[3]
+            'id_servico': servico[0],
+            'id_usuario': servico[1],
+            'nome_servico': servico[2],
+            'valor': servico[3],
+            'descricao': servico[4],
+            'nome_fornecedor': servico[5]
         })
 
     if servicos_lista:
@@ -1123,7 +1156,6 @@ def vincular_servico_adm():
 
 @app.route('/meus-servicos', methods=['GET'])
 def meus_servicos():
-
     # 1. Verifica se há um token no cabeçalho Authorization
     token = request.headers.get('Authorization')
     if not token:
@@ -1137,7 +1169,7 @@ def meus_servicos():
         payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
         id_usuario_logado = payload.get('id_usuario')
         if not id_usuario_logado:
-             return jsonify(mensagem='Token inválido (não contém id_usuario)'), 401
+            return jsonify(mensagem='Token inválido (não contém id_usuario)'), 401
 
     except jwt.ExpiredSignatureError:
         return jsonify(mensagem='Token expirado'), 401
@@ -1146,7 +1178,7 @@ def meus_servicos():
 
     # 4. Conecta ao banco
     cursor = con.cursor()
-    
+
     # 5. A QUERY CORRETA:
     #    - SELECIONA os campos que você quer
     #    - BUSCA por ID_USUARIO
@@ -1162,7 +1194,7 @@ def meus_servicos():
         WHERE ID_USUARIO = ? 
     """
     cursor.execute(query, (id_usuario_logado,))
-    
+
     # 6. USA fetchall() para pegar TODOS os serviços desse usuário
     servicos = cursor.fetchall()
     cursor.close()
@@ -1187,59 +1219,233 @@ def meus_servicos():
         return jsonify(mensagem='Você ainda não cadastrou nenhum serviço', servicos=[])
 
 
-@app.route('/meu-servico/<int:id_servico>', methods=['GET'])
-def servico_por_id(id_servico):
-
-    # Verifica se há um token no cabeçalho Authorization
+@app.route('/admin/cadastrar-usuario', methods=['POST'])
+def admin_cadastrar_usuario():
+    # 1. Autenticação e validação do token JWT
     token = request.headers.get('Authorization')
     if not token:
-        return jsonify(mensagem='Token ausente'), 401
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
 
-    # Remove o prefixo 'Bearer ' se existir
     token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_admin = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    # 2. Verificar se o usuário autenticado é ADM
+    cursor = con.cursor()
+    cursor.execute("SELECT CARGO FROM USUARIO WHERE ID_USUARIO = ? AND STATUS = 'A'", (id_admin,))
+    resultado = cursor.fetchone()
+    if not resultado:
+        cursor.close()
+        return jsonify({"error": "Usuário não encontrado ou inativo."}), 403
+
+    cargo_adm = resultado[0]
+    if str(cargo_adm) != '4':
+        cursor.close()
+        return jsonify({"error": "Apenas administradores podem cadastrar usuários."}), 403
+
+    # 3. Receber dados JSON do novo usuário
+    data = request.get_json()
+    nome = data.get('nome')
+    email = data.get('email')
+    senha = data.get('senha')
+    telefone = data.get('telefone')
+    data_nascimento_str = data.get('data_nascimento')
+    cargo = data.get('cargo')
+    cep = data.get('cep')
+
+    # Valida campos obrigatórios
+    if not nome or not email or not senha:
+        cursor.close()
+        return jsonify({"error": "Nome, email e senha são obrigatórios."}), 400
+
+    # Verificar email duplicado
+    cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?", (email,))
+    usuario_existente = cursor.fetchone()
+    if usuario_existente:
+        cursor.close()
+        return jsonify({"error": "Este email já está em uso."}), 400
+
+    # Converter data nascimento
+    try:
+        data_nascimento = (
+            datetime.strptime(data_nascimento_str, '%d-%m-%Y').date()
+            if data_nascimento_str else None
+        )
+        data_nascimento_formatada = data_nascimento.strftime('%d/%m/%Y') if data_nascimento else None
+    except Exception:
+        cursor.close()
+        return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
+
+    # Validar senha forte
+    if not validar_senha(senha):
+        cursor.close()
+        return jsonify({
+            "error": "A senha deve ter pelo menos 8 caracteres, incluindo letras maiúsculas, minúsculas, números e caracteres especiais."
+        }), 400
+
+    # Validar CEP
+    bairro = uf = cidade = logradouro = None
+    tipo_endereco = None
+    if cep:
+        dados_cep = buscar_dados_cep(cep)
+        if not dados_cep:
+            cursor.close()
+            return jsonify({"error": "CEP inválido ou não encontrado."}), 400
+
+        bairro = dados_cep['bairro']
+        uf = dados_cep['uf']
+        cidade = dados_cep['cidade']
+        logradouro = dados_cep['logradouro']
+
+        if cargo == '2':
+            tipo_endereco = '2'  # comercial
+        else:
+            tipo_endereco = '1'  # residencial
+
+    # Hash da senha
+    senha_hash = bcrypt.generate_password_hash(senha).decode('utf-8')
+
+    # Categoria e nome da marca para fornecedores e outros
+    if cargo == '1':  # Cliente
+        categoria = None
+        nome_marca = None
+    else:
+        categoria = data.get('categoria')
+        nome_marca = data.get('nome_marca')
+
+    sql_usuario = """
+    INSERT INTO USUARIO
+    (NOME, EMAIL, SENHA, TELEFONE, DATA_NASCIMENTO, CARGO,
+    CATEGORIA, NOME_MARCA, TENTATIVAS_ERRO, STATUS)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    valores_usuario = (
+        nome,
+        email,
+        senha_hash,
+        telefone,
+        data_nascimento,
+        cargo,
+        categoria,
+        nome_marca,
+        '0',
+        'A'
+    )
 
     try:
-        # Decodifica o token com a mesma 'senha_secreta' usada no generate_token
-        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
-        id_usuario_logado = payload.get('id_usuario')
+        cursor.execute(sql_usuario, valores_usuario)
+        con.commit()
 
-    except jwt.ExpiredSignatureError:
-        return jsonify(mensagem='Token expirado'), 401
-    except jwt.InvalidTokenError:
-        return jsonify(mensagem='Token inválido'), 401
+        cursor.execute('SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?', (email,))
+        id_usuario = cursor.fetchone()
+        if not id_usuario:
+            cursor.close()
+            return jsonify({"error": "Falha ao obter ID do usuário cadastrado."}), 500
+        id_usuario = id_usuario[0]
+
+        if cep:
+            sql_endereco = """
+            INSERT INTO ENDERECO (ID_USUARIO, CEP, UF, CIDADE, BAIRRO, LOGRADOURO, TIPO_ENDERECO)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+            valores_endereco = (id_usuario, cep, uf, cidade, bairro, logradouro, tipo_endereco)
+            cursor.execute(sql_endereco, valores_endereco)
+            con.commit()
+
+        cursor.close()
+
+        return jsonify({
+            "message": "Usuário cadastrado com sucesso!",
+            "usuario": {
+                'nome': nome,
+                'email': email,
+                'telefone': telefone,
+                'data_nascimento': data_nascimento_formatada,
+                'cargo': cargo,
+                'categoria': categoria,
+                'nome_marca': nome_marca,
+            },
+            "endereco": {
+                'cep': cep,
+                'uf': uf,
+                'cidade': cidade,
+                'bairro': bairro,
+                'logradouro': logradouro,
+                'tipo_endereco': tipo_endereco
+            } if cep else None
+        })
+    except Exception as e:
+        cursor.close()
+        return jsonify({"error": str(e)}), 500
+
+
+
+# ROTA PARA PESQUISAR USUÁRIOS (case-insensitive)
+@app.route('/pesquisar/usuarios', methods=['GET'])
+def pesquisar_usuarios():
+    termo = request.args.get('q', '').strip()
+    if not termo:
+        return jsonify({"error": "Termo de busca necessário (parâmetro 'q')."}), 400
 
     cursor = con.cursor()
-
-    cursor.execute(
-        """
-        SELECT 
-            ID_SERVICO, 
-            ID_USUARIO, 
-            NOME, 
-            VALOR, 
-            DESCRICAO 
-        FROM SERVICOS 
-
-        WHERE ID_SERVICO = ?
-        """,
-        (id_servico,)
-    )
-
-    servico = cursor.fetchone()
+    consulta = """
+        SELECT ID_USUARIO, NOME, EMAIL, CARGO
+        FROM USUARIO
+        WHERE UPPER(NOME) LIKE ? OR UPPER(EMAIL) LIKE ?
+        ORDER BY NOME
+        ROWS 1 TO 50
+    """
+    like = f"%{termo}%".upper()
+    cursor.execute(consulta, (like, like))
+    resultados = cursor.fetchall()
     cursor.close()
 
-    if not servico:
-        return jsonify({"error": "Serviço não encontrado."}), 404
+    lista = [
+        {
+            'id_usuario': u[0],
+            'nome': u[1],
+            'email': u[2],
+            'cargo': u[3],
+        }
+        for u in resultados
+    ]
+    return jsonify({'usuarios': lista})
 
-    servico_dic = {
-        'id_servico': servico[0],
-        'id_usuario': servico[1],
-        'nome': servico[2],
-        'valor': servico[3],
-        'descricao': servico[4]
-    }
 
-    return jsonify(
-        mensagem='Serviço encontrado',
-        servico=servico_dic
-    )
+# ROTA PARA PESQUISAR SERVIÇOS (case-insensitive)
+@app.route('/pesquisar/servicos', methods=['GET'])
+def pesquisar_servicos():
+    termo = request.args.get('q', '').strip()
+    if not termo:
+        return jsonify({"error": "Termo de busca necessário (parâmetro 'q')."}), 400
+
+    cursor = con.cursor()
+    consulta = """
+        SELECT S.ID_SERVICO, S.NOME, S.VALOR, S.DESCRICAO, U.CATEGORIA AS FORNECEDOR
+        FROM SERVICOS S
+        JOIN USUARIO U ON S.ID_USUARIO = U.ID_USUARIO
+        WHERE UPPER(S.NOME) LIKE ? OR UPPER(S.DESCRICAO) LIKE ? OR UPPER(U.CATEGORIA) LIKE ?
+        ROWS 1 TO 50
+    """
+    like = f"%{termo}%".upper()
+    cursor.execute(consulta, (like, like, like))
+    resultados = cursor.fetchall()
+    cursor.close()
+
+    lista = [
+        {
+            'id_servico': s[0],
+            'nome_servico': s[1],
+            'valor': s[2],
+            'descricao': s[3],
+            'fornecedor': s[4],
+        }
+        for s in resultados
+    ]
+    return jsonify({'servicos': lista})
