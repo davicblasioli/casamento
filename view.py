@@ -170,76 +170,66 @@ def usuario_post():
     telefone = data.get('telefone')
     data_nascimento_str = data.get('data_nascimento')
     cargo = data.get('cargo')
-    cep = data.get('cep')  # Mover para cima
+    id_servico_fixo = data.get('id_servico_fixo')
+    cep = data.get('cep')
 
-    # Verificar se campos obrigatórios foram enviados
+    # Verificar campos obrigatórios
     if not nome or not email or not senha:
         return jsonify({"error": "Nome, email e senha são obrigatórios."}), 400
 
     cursor = con.cursor()
 
-    # Verificar se o email já existe no banco
+    # Verificar email duplicado
     cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?", (email,))
-    usuario_existente = cursor.fetchone()
-
-    if usuario_existente:
+    if cursor.fetchone():
         cursor.close()
         return jsonify({"error": "Este email já está em uso. Escolha outro email."}), 400
 
     # Converter data_nascimento
     try:
-        data_nascimento = (
-            datetime.strptime(data_nascimento_str, '%d-%m-%Y').date()
-            if data_nascimento_str else None
-        )
+        data_nascimento = (datetime.strptime(data_nascimento_str, '%d-%m-%Y').date()
+                           if data_nascimento_str else None)
         data_nascimento_formatada = data_nascimento.strftime('%d/%m/%Y') if data_nascimento else None
     except Exception:
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
 
-    # Validar senha forte
+    # Validar senha forte (supondo função validar_senha definida)
     if not validar_senha(senha):
         cursor.close()
         return jsonify({
             "error": "A senha deve ter pelo menos 8 caracteres, incluindo letras maiúsculas, minúsculas, números e caracteres especiais."
         }), 400
 
-    # VALIDAR CEP ANTES DE CRIAR O USUÁRIO
-    bairro = uf = cidade = logradouro = None
-    tipo_endereco = None
-
+    # Buscar dados do CEP
+    bairro = uf = cidade = logradouro = tipo_endereco = None
     if cep:
         dados_cep = buscar_dados_cep(cep)
         if not dados_cep:
             cursor.close()
             return jsonify({"error": "CEP inválido ou não encontrado."}), 400
-
         bairro = dados_cep['bairro']
         uf = dados_cep['uf']
         cidade = dados_cep['cidade']
         logradouro = dados_cep['logradouro']
+        tipo_endereco = '2' if str(cargo) == '2' else '1'  # Comercial se cargo=2, senão residencial
 
-        if cargo == '2':
-            tipo_endereco = '2'  # comercial
-        else:
-            tipo_endereco = '1'  # residencial
-
-    # Agora que tudo foi validado, criar o usuário
+    # Hash da senha
     senha_hash = bcrypt.generate_password_hash(senha).decode('utf-8')
 
-    # Definir categoria e nome_marca baseado no cargo
-    if cargo == '1':  # Cliente
+    # Categoria e nome_marca conforme cargo
+    if str(cargo) == '1':  # Cliente
         categoria = None
         nome_marca = None
-    else:  # Fornecedor ou outros
+    else:
         categoria = data.get('categoria')
         nome_marca = data.get('nome_marca')
 
     sql_usuario = """
     INSERT INTO USUARIO
-    (NOME, EMAIL, SENHA, TELEFONE, DATA_NASCIMENTO, CARGO,
-    CATEGORIA, NOME_MARCA, TENTATIVAS_ERRO, STATUS)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (NOME, EMAIL, SENHA, TELEFONE, DATA_NASCIMENTO, CARGO, ID_SERVICO_FIXO,
+     CATEGORIA, NOME_MARCA, TENTATIVAS_ERRO, STATUS)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     valores_usuario = (
@@ -249,9 +239,10 @@ def usuario_post():
         telefone,
         data_nascimento,
         cargo,
+        id_servico_fixo,
         categoria,
         nome_marca,
-        '0',
+        0,
         'A'
     )
 
@@ -259,14 +250,15 @@ def usuario_post():
         cursor.execute(sql_usuario, valores_usuario)
         con.commit()
 
-        cursor.execute('SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?', (email,))
+        # Buscar ID do usuário inserido
+        cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?", (email,))
         id_usuario = cursor.fetchone()
         if not id_usuario:
             cursor.close()
             return jsonify({"error": "Falha ao obter ID do usuário cadastrado."}), 500
         id_usuario = id_usuario[0]
 
-        # Inserir endereço se CEP foi fornecido
+        # Inserir endereço se houver CEP
         if cep:
             sql_endereco = """
             INSERT INTO ENDERECO (ID_USUARIO, CEP, UF, CIDADE, BAIRRO, LOGRADOURO, TIPO_ENDERECO)
@@ -281,21 +273,22 @@ def usuario_post():
         return jsonify({
             "message": "Usuário cadastrado com sucesso!",
             "usuario": {
-                'nome': nome,
-                'email': email,
-                'telefone': telefone,
-                'data_nascimento': data_nascimento_formatada,
-                'cargo': cargo,
-                'categoria': categoria,
-                'nome_marca': nome_marca,
+                "nome": nome,
+                "email": email,
+                "telefone": telefone,
+                "data_nascimento": data_nascimento_formatada,
+                "cargo": cargo,
+                "categoria": categoria,
+                "nome_marca": nome_marca,
+                "id_servico_fixo": id_servico_fixo
             },
             "endereco": {
-                'cep': cep,
-                'uf': uf,
-                'cidade': cidade,
-                'bairro': bairro,
-                'logradouro': logradouro,
-                'tipo_endereco': tipo_endereco
+                "cep": cep,
+                "uf": uf,
+                "cidade": cidade,
+                "bairro": bairro,
+                "logradouro": logradouro,
+                "tipo_endereco": tipo_endereco
             } if cep else None
         })
     except Exception as e:
