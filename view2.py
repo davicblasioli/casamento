@@ -170,7 +170,6 @@ def usuario_post():
     telefone = data.get('telefone')
     data_nascimento_str = data.get('data_nascimento')
     cargo = data.get('cargo')
-    id_servico_fixo = data.get('id_servico_fixo')
     cep = data.get('cep')
 
     # Verificar campos obrigatórios
@@ -227,9 +226,9 @@ def usuario_post():
 
     sql_usuario = """
     INSERT INTO USUARIO
-    (NOME, EMAIL, SENHA, TELEFONE, DATA_NASCIMENTO, CARGO, ID_SERVICO_FIXO,
+    (NOME, EMAIL, SENHA, TELEFONE, DATA_NASCIMENTO, CARGO,
      CATEGORIA, NOME_MARCA, TENTATIVAS_ERRO, STATUS)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     valores_usuario = (
@@ -239,7 +238,6 @@ def usuario_post():
         telefone,
         data_nascimento,
         cargo,
-        id_servico_fixo,
         categoria,
         nome_marca,
         0,
@@ -280,7 +278,6 @@ def usuario_post():
                 "cargo": cargo,
                 "categoria": categoria,
                 "nome_marca": nome_marca,
-                "id_servico_fixo": id_servico_fixo
             },
             "endereco": {
                 "cep": cep,
@@ -920,9 +917,6 @@ def servico_put(id_servico):
     if not serv:
         cursor.close()
         return jsonify({'error': 'Serviço não encontrado'}), 404
-    if serv[0] != id_usuario_token:
-        cursor.close()
-        return jsonify({'error': 'Permissão negada. Só o dono do serviço pode editar.'}), 403
 
     # 3. Recebe dados: aceitar tanto JSON quanto form-data (para imagem)
     nome = None

@@ -1,5 +1,5 @@
 from flask import request, jsonify
-from datetime import datetime
+from datetime import datetime, date
 from main import app, con  # Mantendo a importação conforme seu setup
 from flask_bcrypt import Bcrypt
 import re
@@ -160,6 +160,8 @@ def usuario_por_id(id):
     )
 
 
+from datetime import datetime, date
+
 @app.route('/usuario', methods=['POST'])
 def usuario_post():
     data = request.get_json()
@@ -170,7 +172,6 @@ def usuario_post():
     telefone = data.get('telefone')
     data_nascimento_str = data.get('data_nascimento')
     cargo = data.get('cargo')
-    id_servico_fixo = data.get('id_servico_fixo')
     cep = data.get('cep')
 
     # Verificar campos obrigatórios
@@ -193,6 +194,11 @@ def usuario_post():
     except Exception:
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
+
+    # Validação: data_nascimento não pode ser futura
+    if data_nascimento and data_nascimento > date.today():
+        cursor.close()
+        return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
 
     # Validar senha forte (supondo função validar_senha definida)
     if not validar_senha(senha):
@@ -227,9 +233,9 @@ def usuario_post():
 
     sql_usuario = """
     INSERT INTO USUARIO
-    (NOME, EMAIL, SENHA, TELEFONE, DATA_NASCIMENTO, CARGO, ID_SERVICO_FIXO,
+    (NOME, EMAIL, SENHA, TELEFONE, DATA_NASCIMENTO, CARGO,
      CATEGORIA, NOME_MARCA, TENTATIVAS_ERRO, STATUS)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     valores_usuario = (
@@ -239,7 +245,6 @@ def usuario_post():
         telefone,
         data_nascimento,
         cargo,
-        id_servico_fixo,
         categoria,
         nome_marca,
         0,
@@ -280,7 +285,6 @@ def usuario_post():
                 "cargo": cargo,
                 "categoria": categoria,
                 "nome_marca": nome_marca,
-                "id_servico_fixo": id_servico_fixo
             },
             "endereco": {
                 "cep": cep,
@@ -335,6 +339,11 @@ def usuario_put(id):
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
 
+    # Verifica se a data de nascimento não é futura
+    if data_nascimento and data_nascimento > date.today():
+        cursor.close()
+        return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
+
     # Atualiza CEP independente do cargo
     if cep:
         cursor.execute('UPDATE ENDERECO SET CEP = ? WHERE ID_USUARIO = ?', (cep, id))
@@ -373,6 +382,7 @@ def usuario_put(id):
             'nome_marca': nome_marca if cargo == '2' else None
         }
     })
+
 
 
 @app.route('/login', methods=['POST'])
@@ -668,8 +678,6 @@ def cerimonialistas():
         return jsonify(mensagem='Registro de Cadastro de Usuários', usuarios=usuarios_dic)
     else:
         return jsonify(mensagem='Nenhum dado encontrado')
-
-
 
 
 @app.route('/adms', methods=['GET'])
@@ -1270,6 +1278,11 @@ def admin_cadastrar_usuario():
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
 
+    # Validação: data nascimento não pode ser futura
+    if data_nascimento and data_nascimento > date.today():
+        cursor.close()
+        return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
+
     # Validar senha forte
     if not validar_senha(senha):
         cursor.close()
@@ -1372,7 +1385,6 @@ def admin_cadastrar_usuario():
     except Exception as e:
         cursor.close()
         return jsonify({"error": str(e)}), 500
-
 
 
 # ROTA PARA PESQUISAR USUÁRIOS (case-insensitive)

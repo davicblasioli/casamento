@@ -20,7 +20,7 @@ try:
 except Exception as e:
     print(f'Erro {e}')
 
-from view import *
+from view2 import *
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
