@@ -1,5 +1,5 @@
 from flask import request, jsonify
-from datetime import datetime
+from datetime import datetime, date
 from main import app, con  # Mantendo a importação conforme seu setup
 from flask_bcrypt import Bcrypt
 import re
@@ -66,23 +66,16 @@ def buscar_dados_cep(cep):
 
 @app.route('/usuario', methods=['GET'])
 def usuario():
-    pagina = int(request.args.get('pagina', 1))
-    quantidade_por_pagina = 10
-
-    primeiro_usuario = (pagina * quantidade_por_pagina) - quantidade_por_pagina + 1
-    ultimo_usuario = pagina * quantidade_por_pagina
 
     cur = con.cursor()
     cur.execute(f'''
         SELECT id_usuario, nome, email, telefone, data_nascimento, cargo, categoria, nome_marca, status
         FROM usuario
-        ROWS {primeiro_usuario} TO {ultimo_usuario}
     ''')
     usuarios = cur.fetchall()
 
     cur.execute('SELECT COUNT(*) FROM usuario')
     total_usuarios = cur.fetchone()[0]
-    total_paginas = (total_usuarios + quantidade_por_pagina - 1) // quantidade_por_pagina
 
     usuarios_dic = []
     for u in usuarios:
@@ -100,8 +93,6 @@ def usuario():
 
     return jsonify(
         mensagem='Lista de Usuarios',
-        pagina_atual=pagina,
-        total_paginas=total_paginas,
         total_usuarios=total_usuarios,
         usuarios=usuarios_dic
     )
@@ -310,6 +301,7 @@ def usuario_put(id):
     cep = request.form.get('cep')
     categoria = request.form.get('categoria')
     nome_marca = request.form.get('nome_marca')
+    ativo = request.form.get('ativo')  # <-- Vem como "1" ou "0"
     imagem = request.files.get('imagem')
 
     # Validação mínima
@@ -318,29 +310,34 @@ def usuario_put(id):
         return jsonify({"error": "Nome e email obrigatórios."}), 400
 
     cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ? AND ID_USUARIO <> ?", (email, id))
-    email_existente = cursor.fetchone()
-    if email_existente:
+    if cursor.fetchone():
         cursor.close()
         return jsonify({"error": "Este email já está em uso por outro usuário."}), 400
 
+    # Converter data
     try:
         data_nascimento = (
             datetime.strptime(data_nascimento_str, '%d-%m-%Y').date()
             if data_nascimento_str else None
         )
+        # IMPEDIR DATA FUTURA
+        if data_nascimento and data_nascimento > date.today():
+            cursor.close()
+            return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
     except Exception:
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
-
-    # Atualiza CEP independente do cargo
+    # Atualiza CEP
     if cep:
         cursor.execute('UPDATE ENDERECO SET CEP = ? WHERE ID_USUARIO = ?', (cep, id))
 
-    # Campos básicos do usuário
-    update_fields = ["NOME = ?", "EMAIL = ?", "TELEFONE = ?", "DATA_NASCIMENTO = ?"]
-    update_values = [nome, email, telefone, data_nascimento]
+    # Converter status 1/0 → A/I
+    status_db = "A" if ativo == "1" else "I"
 
-    # Se fornecedor, autoriza editar categoria e nome da marca
+    # Atualiza usuário
+    update_fields = ["NOME = ?", "EMAIL = ?", "TELEFONE = ?", "DATA_NASCIMENTO = ?", "STATUS = ?"]
+    update_values = [nome, email, telefone, data_nascimento, status_db]
+
     if cargo == '2':
         update_fields += ["CATEGORIA = ?", "NOME_MARCA = ?"]
         update_values += [categoria, nome_marca]
@@ -351,6 +348,7 @@ def usuario_put(id):
     con.commit()
     cursor.close()
 
+    # Salvar imagem
     if imagem:
         nome_imagem = f"{id}.jpeg"
         pasta_destino = os.path.join(app.config['UPLOAD_FOLDER'], "Usuarios")
@@ -366,6 +364,7 @@ def usuario_put(id):
             'telefone': telefone,
             'data_nascimento': data_nascimento_str,
             'cep': cep,
+            'status': status_db,        # Aqui você já vê A ou I
             'categoria': categoria if cargo == '2' else None,
             'nome_marca': nome_marca if cargo == '2' else None
         }
@@ -399,7 +398,7 @@ def login():
     status = usuario[10]
 
     if status == 'I':
-        return jsonify({"error": "Você errou seu email ou sua senha 3 vezes, o usuário foi inativado."}), 403
+        return jsonify({"error": "O usuário foi inativado."}), 403
 
     if bcrypt.check_password_hash(senha_hash, senha):
         # Resetar tentativas de erro no login bem-sucedido
@@ -433,7 +432,8 @@ def login():
     con.commit()
 
     if tentativas_erro >= 3:
-        cursor.execute("UPDATE USUARIO SET STATUS = 'I' WHERE ID_USUARIO = ?", (id_usuario,))
+        # Inativa o usuário e zera tentativas_erro
+        cursor.execute("UPDATE USUARIO SET STATUS = 'I', TENTATIVAS_ERRO = 0 WHERE ID_USUARIO = ?", (id_usuario,))
         con.commit()
 
     cursor.close()
@@ -1028,10 +1028,6 @@ def servico_delete(id_servico):
         cursor.close()
         return jsonify({'error': 'Serviço não encontrado'}), 404
 
-    if serv[0] != id_usuario_token:
-        cursor.close()
-        return jsonify({'error': 'Permissão negada. Só o dono do serviço pode excluir.'}), 403
-
     try:
         # 3. Deleta o serviço no banco
         cursor.execute("DELETE FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
@@ -1449,3 +1445,252 @@ def pesquisar_servicos():
         for s in resultados
     ]
     return jsonify({'servicos': lista})
+
+
+@app.route('/festa', methods=['POST'])
+def criar_festa():
+    # 1. Autenticação do usuário via JWT
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    # 2. Verificação do cargo do usuário
+    cursor = con.cursor()
+    cursor.execute("SELECT CARGO FROM USUARIO WHERE ID_USUARIO = ? AND STATUS = 'A'", (id_usuario,))
+    resultado = cursor.fetchone()
+    if not resultado:
+        cursor.close()
+        return jsonify({"error": "Usuário não encontrado ou inativo."}), 403
+
+    cargo = str(resultado[0])
+    if cargo not in ('1', '4'):
+        cursor.close()
+        return jsonify({"error": "Apenas noivos e administradores podem criar festas."}), 403
+
+    # 3. Receber dados da festa via JSON
+    data = request.get_json()
+    nome = data.get('nome')
+    categoria = data.get('categoria')
+    valor = data.get('valor')
+    convidados = data.get('convidados')
+    data_festa = data.get('data_festa')
+    descricao = data.get('descricao')
+
+    if not nome or not categoria or not valor or not convidados or not data_festa:
+        cursor.close()
+        return jsonify({"error": "Campos obrigatórios: nome, categoria, valor, convidados, data_festa"}), 400
+
+    # 4. Validação: só aceita datas futuras
+    try:
+        data_festa_dt = datetime.strptime(data_festa, "%Y-%m-%d")
+    except ValueError:
+        cursor.close()
+        return jsonify({"error": "Formato de data inválido, use AAAA-MM-DD"}), 400
+
+    data_atual = datetime.now().date()
+    if data_festa_dt.date() <= data_atual:
+        cursor.close()
+        return jsonify({"error": "A data da festa deve ser futura"}), 400
+
+    try:
+        sql = """
+            INSERT INTO FESTA (NOME, CATEGORIA, VALOR, CONVIDADOS, DATA_FESTA, DESCRICAO, ID_USUARIO)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING ID_FESTA
+        """
+        cursor.execute(sql, (nome, categoria, valor, convidados, data_festa, descricao, id_usuario))
+        id_festa = cursor.fetchone()[0]
+        con.commit()
+        cursor.close()
+
+        return jsonify({
+            "message": "Festa criada com sucesso!",
+            "festa": {
+                'id_festa': id_festa,
+                'nome': nome,
+                'categoria': categoria,
+                'valor': valor,
+                'convidados': convidados,
+                'data_festa': data_festa,
+                'descricao': descricao,
+                'id_usuario': id_usuario
+            }
+        }), 201
+
+    except Exception as e:
+        con.rollback()
+        if 'cursor' in locals():
+            cursor.close()
+        return jsonify({'error': 'Erro ao criar festa', 'details': str(e)}), 500
+
+
+@app.route('/festa/<int:id_festa>', methods=['PUT'])
+def editar_festa(id_festa):
+    # 1. Autenticação
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    cursor = con.cursor()
+
+    # 2. Verifica se a festa existe e pertence ao usuário
+    cursor.execute("SELECT ID_USUARIO FROM FESTA WHERE ID_FESTA = ?", (id_festa,))
+    festa_existente = cursor.fetchone()
+    if not festa_existente:
+        cursor.close()
+        return jsonify({"error": "Festa não encontrada."}), 404
+
+    if festa_existente[0] != id_usuario:
+        cursor.close()
+        return jsonify({"error": "Permissão negada. Só o dono pode editar esta festa."}), 403
+
+    # 3. Recebe dados para atualização (JSON)
+    data = request.get_json()
+    nome = data.get('nome')
+    categoria = data.get('categoria')
+    valor = data.get('valor')
+    convidados = data.get('convidados')
+    data_festa = data.get('data_festa')
+    descricao = data.get('descricao')
+
+    # 4. Validação: pelo menos um campo deve ser enviado para atualizar
+    if not any([nome, categoria, valor, convidados, data_festa, descricao]):
+        cursor.close()
+        return jsonify({"error": "Nenhum campo para atualizar foi enviado."}), 400
+
+    # 5. Se data_festa for enviada, valida se é uma data futura
+    if data_festa:
+        try:
+            data_festa_dt = datetime.strptime(data_festa, "%Y-%m-%d")
+        except ValueError:
+            cursor.close()
+            return jsonify({"error": "Formato de data inválido, use AAAA-MM-DD"}), 400
+
+        data_atual = datetime.now().date()
+        if data_festa_dt.date() <= data_atual:
+            cursor.close()
+            return jsonify({"error": "A data da festa deve ser futura"}), 400
+
+    try:
+        # 6. Monta dinamicamente a query de update
+        update_fields = []
+        update_values = []
+
+        if nome is not None:
+            update_fields.append("NOME = ?")
+            update_values.append(nome)
+        if categoria is not None:
+            update_fields.append("CATEGORIA = ?")
+            update_values.append(categoria)
+        if valor is not None:
+            update_fields.append("VALOR = ?")
+            update_values.append(valor)
+        if convidados is not None:
+            update_fields.append("CONVIDADOS = ?")
+            update_values.append(convidados)
+        if data_festa is not None:
+            update_fields.append("DATA_FESTA = ?")
+            update_values.append(data_festa)
+        if descricao is not None:
+            update_fields.append("DESCRICAO = ?")
+            update_values.append(descricao)
+
+        if update_fields:
+            update_values.append(id_festa)
+            sql = f"UPDATE FESTA SET {', '.join(update_fields)} WHERE ID_FESTA = ?"
+            cursor.execute(sql, update_values)
+            con.commit()
+
+        # Buscar os dados atualizados da festa para retornar
+        cursor.execute(
+            "SELECT ID_FESTA, NOME, CATEGORIA, VALOR, CONVIDADOS, DATA_FESTA, DESCRICAO, ID_USUARIO FROM FESTA WHERE ID_FESTA = ?",
+            (id_festa,))
+        festa_atualizada = cursor.fetchone()
+        cursor.close()
+
+        festa_dict = {
+            'id_festa': festa_atualizada[0],
+            'nome': festa_atualizada[1],
+            'categoria': festa_atualizada[2],
+            'valor': festa_atualizada[3],
+            'convidados': festa_atualizada[4],
+            'data_festa': festa_atualizada[5],
+            'descricao': festa_atualizada[6],
+            'id_usuario': festa_atualizada[7]
+        }
+
+        return jsonify({
+            "message": "Festa atualizada com sucesso!",
+            "festa": festa_dict
+        }), 200
+
+
+    except Exception as e:
+        con.rollback()
+        if 'cursor' in locals():
+            cursor.close()
+        return jsonify({"error": "Erro ao atualizar festa", "details": str(e)}), 500
+
+
+@app.route('/festas/usuario/<int:id_usuario>', methods=['GET'])
+def listar_festas_usuario(id_usuario):
+    cursor = con.cursor()
+    cursor.execute(
+        '''
+        SELECT ID_FESTA, NOME, CATEGORIA, VALOR, CONVIDADOS, DATA_FESTA, DESCRICAO, ID_USUARIO
+        FROM FESTA
+        WHERE ID_USUARIO = ?
+        ORDER BY DATA_FESTA
+        ''',
+        (id_usuario,)
+    )
+    festas = cursor.fetchall()
+    cursor.close()
+
+    festas_lista = []
+    for festa in festas:
+        # Tenta formatar DATA_FESTA se for datetime ou string
+        data_raw = festa[5]
+        try:
+            # Se vier como datetime.date ou datetime.datetime
+            if isinstance(data_raw, (datetime,)):
+                data_formatada = data_raw.strftime('%d/%m/%Y')
+            else:
+                # Se vier como string no formato 'YYYY-MM-DD'
+                data_formatada = datetime.strptime(str(data_raw), '%Y-%m-%d').strftime('%d/%m/%Y')
+        except Exception:
+            data_formatada = str(data_raw)  # Em último caso, retorna como veio
+
+        festas_lista.append({
+            'id_festa': festa[0],
+            'nome': festa[1],
+            'categoria': festa[2],
+            'valor': festa[3],
+            'convidados': festa[4],
+            'data_festa': data_formatada,
+            'descricao': festa[6],
+            'id_usuario': festa[7]
+        })
+
+    return jsonify({
+        'mensagem': f'{len(festas_lista)} festa(s) encontrada(s) para o usuário.',
+        'festas': festas_lista
+    })
