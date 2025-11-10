@@ -8,10 +8,9 @@ DB_NAME = r'C:\Users\Aluno\Downloads\casamento-maini\casamento-main\bancocasamen
 DB_USER = 'sysdba'
 DB_PASSWORD = 'sysdba'
 
-### **Linguagem Python (Palavras-chave e Funções Nativas)**
 # `from`: Para importar partes de uma biblioteca.
 # `import`: Para importar uma biblioteca inteira.
-# `def`: Para definir uma função.
+# `def`: Para definir uma função.### **Linguagem Python (Palavras-chave e Funções Nativas)**
 # `if`, `elif`, `else`: Para criar blocos de condição.
 # `for`: Para criar laços de repetição.
 # `in`: Usado em laços `for` e para verificar se um item existe em uma lista, string ou dicionário (como `if 'usuario' in session`).

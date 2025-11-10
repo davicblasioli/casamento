@@ -7,6 +7,48 @@ import bcrypt
 import requests
 import jwt
 import os
+from flask_mail import Mail, Message
+
+# Configurações do seu servidor SMTP
+app.config['MAIL_SERVER'] = 'smtp.seuprovedor.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'seu-email@provedor.com'
+app.config['MAIL_PASSWORD'] = 'sua-senha'
+app.config['MAIL_DEFAULT_SENDER'] = ('Nome do Remetente', 'seu-email@provedor.com')
+
+mail = Mail(app)  # Inicialize a extensão Flask-Mail
+
+@app.route('/enviar-email', methods=['POST'])
+def enviar_email():
+    data = request.get_json()
+    nome = data.get('nome')
+    email_remetente = data.get('email')
+    assunto = data.get('assunto')
+    corpo = data.get('corpo')
+
+    # Validação dos campos
+    if not nome or not email_remetente or not assunto or not corpo:
+        return jsonify({"error": "Nome, email, assunto e corpo do email são obrigatórios."}), 400
+
+    destinatario = "destinatario-fixo@exemplo.com"
+
+    try:
+        # Montar email incluindo nome e email do remetente no corpo
+        mensagem_completa = f"Mensagem de: {nome} <{email_remetente}>\n\n{corpo}"
+
+        msg = Message(
+            subject=assunto,
+            recipients=[destinatario],
+            body=mensagem_completa,
+            sender=email_remetente  # Define o remetente com o email enviado
+        )
+        mail.send(msg)
+
+        return jsonify({"message": "Email enviado com sucesso!"}), 200
+    except Exception as e:
+        return jsonify({"error": "Falha ao enviar email.", "details": str(e)}), 500
+
 
 bcrypt = Bcrypt(app)  # Inicializa o bcrypt para criptografia segura
 app.config.from_pyfile('config.py')
@@ -45,7 +87,7 @@ def validar_senha(senha):
 
 
 def buscar_dados_cep(cep):
-    url = f"https://viacep.com.br/ws/{cep}/json/"
+    url = f"https://brasilapi.com.br/api/cep/v2/{cep}"
     try:
         resposta = requests.get(url, timeout=5)
         if resposta.status_code == 200:
@@ -53,10 +95,10 @@ def buscar_dados_cep(cep):
             if 'erro' in dados:
                 return None
             return {
-                'bairro': dados.get('bairro'),
-                'uf': dados.get('uf'),
-                'cidade': dados.get('localidade'),
-                'logradouro': dados.get('logradouro')
+                'bairro': dados.get('neighborhood'),
+                'uf': dados.get('state'),
+                'cidade': dados.get('city'),
+                'logradouro': dados.get('street')
             }
         else:
             return None
@@ -207,9 +249,11 @@ def usuario_post():
     # Hash da senha
     senha_hash = bcrypt.generate_password_hash(senha).decode('utf-8')
 
-    # Categoria e nome_marca conforme cargo
     if str(cargo) == '1':  # Cliente
         categoria = None
+        nome_marca = None
+    elif str(cargo) == '3':  # Cerimonialista
+        categoria = "Cerimonialista"
         nome_marca = None
     else:
         categoria = data.get('categoria')
@@ -1247,6 +1291,10 @@ def admin_cadastrar_usuario():
         cursor.close()
         return jsonify({"error": "Nome, email e senha são obrigatórios."}), 400
 
+    if not data_nascimento_str:
+        cursor.close()
+        return jsonify({"error": "Data de nascimento é obrigatório."}), 400
+
     # Verificar email duplicado
     cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?", (email,))
     usuario_existente = cursor.fetchone()
@@ -1297,6 +1345,9 @@ def admin_cadastrar_usuario():
     # Categoria e nome da marca para fornecedores e outros
     if cargo == '1':  # Cliente
         categoria = None
+        nome_marca = None
+    elif cargo == '3':
+        categoria = 'Cerimonialista'
         nome_marca = None
     else:
         categoria = data.get('categoria')
@@ -1367,7 +1418,6 @@ def admin_cadastrar_usuario():
     except Exception as e:
         cursor.close()
         return jsonify({"error": str(e)}), 500
-
 
 
 # ROTA PARA PESQUISAR USUÁRIOS (case-insensitive)
@@ -1694,3 +1744,72 @@ def listar_festas_usuario(id_usuario):
         'mensagem': f'{len(festas_lista)} festa(s) encontrada(s) para o usuário.',
         'festas': festas_lista
     })
+
+
+@app.route('/relacao', methods=['POST'])
+def criar_relacao():
+    data = request.get_json()
+    id_servico = data.get('id_servico')
+    id_festa = data.get('id_festa')
+
+    if not id_servico or not id_festa:
+        return jsonify({'error': 'É necessário informar id_servico e id_festa.'}), 400
+
+    cursor = con.cursor()
+
+    # Confirma se o serviço existe e busca o dono do serviço
+    cursor.execute("SELECT ID_USUARIO FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
+    servico_data = cursor.fetchone()
+    if not servico_data:
+        cursor.close()
+        return jsonify({'error': 'Serviço não encontrado.'}), 404
+
+    id_usuario = servico_data[0]
+
+    # Busca nome do usuário dono do serviço
+    cursor.execute("SELECT NOME FROM USUARIO WHERE ID_USUARIO = ?", (id_usuario,))
+    usuario_data = cursor.fetchone()
+    if not usuario_data:
+        cursor.close()
+        return jsonify({'error': 'Usuário dono do serviço não encontrado.'}), 404
+
+    nome_usuario = usuario_data[0]
+
+    # Confirma se a festa existe
+    cursor.execute("SELECT 1 FROM FESTA WHERE ID_FESTA = ?", (id_festa,))
+    if not cursor.fetchone():
+        cursor.close()
+        return jsonify({'error': 'Festa não encontrada.'}), 404
+
+    # Cria a relação
+    cursor.execute("INSERT INTO RELACAO (ID_SERVICO, ID_FESTA) VALUES (?, ?)", (id_servico, id_festa))
+    con.commit()
+    cursor.close()
+
+    return jsonify({
+        "message": "Relação criada com sucesso.",
+        "relacao": {
+            "id_servico": id_servico,
+            "id_festa": id_festa,
+            "nome_usuario_servico": nome_usuario
+        }
+    }), 201
+
+
+@app.route('/relacao/<int:id_relacao>', methods=['DELETE'])
+def deletar_relacao(id_relacao):
+    cursor = con.cursor()
+
+    # Verifica se a relação existe
+    cursor.execute("SELECT ID_RELACAO FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    existe = cursor.fetchone()
+    if not existe:
+        cursor.close()
+        return jsonify({'error': 'Relação não encontrada.'}), 404
+
+    # Exclui a relação
+    cursor.execute("DELETE FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    con.commit()
+    cursor.close()
+
+    return jsonify({'message': 'Relação (contrato) cancelada com sucesso.'}), 200
