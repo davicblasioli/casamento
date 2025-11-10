@@ -864,11 +864,6 @@ def servico_post():
         cursor.close()
         return jsonify({"error": "Usuário não encontrado ou inativo."}), 403
 
-    cargo = resultado[0]
-    if str(cargo) != '2':
-        cursor.close()
-        return jsonify({"error": "Apenas fornecedores podem cadastrar serviços."}), 403
-
     # 3. Receber dados do form-data (nome, valor, descricao, categoria, imagem)
     nome = request.form.get('nome')
     valor = request.form.get('valor')
