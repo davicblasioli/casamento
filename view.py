@@ -1733,6 +1733,25 @@ def listar_festas_usuario(id_usuario):
     })
 
 
+@app.route('/relacao/<int:id_relacao>', methods=['DELETE'])
+def deletar_relacao(id_relacao):
+    cursor = con.cursor()
+
+    # Verifica se a relação existe
+    cursor.execute("SELECT ID_RELACAO FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    existe = cursor.fetchone()
+    if not existe:
+        cursor.close()
+        return jsonify({'error': 'Relação não encontrada.'}), 404
+
+    # Exclui a relação
+    cursor.execute("DELETE FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    con.commit()
+    cursor.close()
+
+    return jsonify({'message': 'Relação (contrato) cancelada com sucesso.'}), 200
+
+
 @app.route('/relacao', methods=['POST'])
 def criar_relacao():
     data = request.get_json()
@@ -1743,6 +1762,12 @@ def criar_relacao():
         return jsonify({'error': 'É necessário informar id_servico e id_festa.'}), 400
 
     cursor = con.cursor()
+
+    # Verifica se já existe uma relação igual
+    cursor.execute("SELECT 1 FROM RELACAO WHERE ID_SERVICO = ? AND ID_FESTA = ?", (id_servico, id_festa))
+    if cursor.fetchone():
+        cursor.close()
+        return jsonify({'error': 'Esta relação já existe!'}), 409  # 409 = Conflict
 
     # Confirma se o serviço existe e busca o dono do serviço
     cursor.execute("SELECT ID_USUARIO FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
@@ -1783,20 +1808,42 @@ def criar_relacao():
     }), 201
 
 
-@app.route('/relacao/<int:id_relacao>', methods=['DELETE'])
-def deletar_relacao(id_relacao):
+@app.route('/relacao/festa/<int:id_festa>', methods=['GET'])
+def listar_relacoes_por_festa(id_festa):
     cursor = con.cursor()
-
-    # Verifica se a relação existe
-    cursor.execute("SELECT ID_RELACAO FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
-    existe = cursor.fetchone()
-    if not existe:
-        cursor.close()
-        return jsonify({'error': 'Relação não encontrada.'}), 404
-
-    # Exclui a relação
-    cursor.execute("DELETE FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
-    con.commit()
+    sql = """
+        SELECT
+            R.ID_RELACAO,
+            S.ID_SERVICO, S.NOME, S.VALOR, S.DESCRICAO, S.CATEGORIA,
+            U.ID_USUARIO, U.NOME, U.EMAIL, U.TELEFONE, U.CATEGORIA
+        FROM RELACAO R
+        JOIN SERVICOS S ON R.ID_SERVICO = S.ID_SERVICO
+        JOIN USUARIO U ON S.ID_USUARIO = U.ID_USUARIO
+        WHERE R.ID_FESTA = ?
+    """
+    cursor.execute(sql, (id_festa,))
+    resultados = cursor.fetchall()
     cursor.close()
 
-    return jsonify({'message': 'Relação (contrato) cancelada com sucesso.'}), 200
+    relacoes = []
+    for row in resultados:
+        relacao = {
+            "id_relacao": row[0],
+            "servico": {
+                "id_servico": row[1],
+                "nome": row[2],
+                "valor": row[3],
+                "descricao": row[4],
+                "categoria": row[5]
+            },
+            "usuario": {
+                "id_usuario": row[6],
+                "nome": row[7],
+                "email": row[8],
+                "telefone": row[9],
+                "categoria": row[10]
+            }
+        }
+        relacoes.append(relacao)
+
+    return jsonify(relacoes)
