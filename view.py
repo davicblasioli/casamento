@@ -7,6 +7,40 @@ import bcrypt
 import requests
 import jwt
 import os
+from flask_mail import Mail, Message
+
+mail = Mail(app)  # Inicialize a extensão Flask-Mail
+
+@app.route('/enviar-email', methods=['POST'])
+def enviar_email():
+    data = request.get_json()
+    nome = data.get('nome')
+    email_remetente = data.get('email')
+    assunto = data.get('assunto')
+    corpo = data.get('corpo')
+
+    # Validação dos campos
+    if not nome or not email_remetente or not assunto or not corpo:
+        return jsonify({"error": "Nome, email, assunto e corpo do email são obrigatórios."}), 400
+
+    destinatario = "destinatario-fixo@exemplo.com"
+
+    try:
+        # Montar email incluindo nome e email do remetente no corpo
+        mensagem_completa = f"Mensagem de: {nome} <{email_remetente}>\n\n{corpo}"
+
+        msg = Message(
+            subject=assunto,
+            recipients=[destinatario],
+            body=mensagem_completa,
+            sender=email_remetente  # Define o remetente com o email enviado
+        )
+        mail.send(msg)
+
+        return jsonify({"message": "Email enviado com sucesso!"}), 200
+    except Exception as e:
+        return jsonify({"error": "Falha ao enviar email.", "details": str(e)}), 500
+
 
 bcrypt = Bcrypt(app)  # Inicializa o bcrypt para criptografia segura
 app.config.from_pyfile('config.py')
@@ -45,7 +79,7 @@ def validar_senha(senha):
 
 
 def buscar_dados_cep(cep):
-    url = f"https://viacep.com.br/ws/{cep}/json/"
+    url = f"https://brasilapi.com.br/api/cep/v2/{cep}"
     try:
         resposta = requests.get(url, timeout=5)
         if resposta.status_code == 200:
@@ -53,10 +87,10 @@ def buscar_dados_cep(cep):
             if 'erro' in dados:
                 return None
             return {
-                'bairro': dados.get('bairro'),
-                'uf': dados.get('uf'),
-                'cidade': dados.get('localidade'),
-                'logradouro': dados.get('logradouro')
+                'bairro': dados.get('neighborhood'),
+                'uf': dados.get('state'),
+                'cidade': dados.get('city'),
+                'logradouro': dados.get('street')
             }
         else:
             return None
@@ -66,23 +100,16 @@ def buscar_dados_cep(cep):
 
 @app.route('/usuario', methods=['GET'])
 def usuario():
-    pagina = int(request.args.get('pagina', 1))
-    quantidade_por_pagina = 10
-
-    primeiro_usuario = (pagina * quantidade_por_pagina) - quantidade_por_pagina + 1
-    ultimo_usuario = pagina * quantidade_por_pagina
 
     cur = con.cursor()
     cur.execute(f'''
         SELECT id_usuario, nome, email, telefone, data_nascimento, cargo, categoria, nome_marca, status
         FROM usuario
-        ROWS {primeiro_usuario} TO {ultimo_usuario}
     ''')
     usuarios = cur.fetchall()
 
     cur.execute('SELECT COUNT(*) FROM usuario')
     total_usuarios = cur.fetchone()[0]
-    total_paginas = (total_usuarios + quantidade_por_pagina - 1) // quantidade_por_pagina
 
     usuarios_dic = []
     for u in usuarios:
@@ -100,8 +127,6 @@ def usuario():
 
     return jsonify(
         mensagem='Lista de Usuarios',
-        pagina_atual=pagina,
-        total_paginas=total_paginas,
         total_usuarios=total_usuarios,
         usuarios=usuarios_dic
     )
@@ -160,8 +185,6 @@ def usuario_por_id(id):
     )
 
 
-from datetime import datetime, date
-
 @app.route('/usuario', methods=['POST'])
 def usuario_post():
     data = request.get_json()
@@ -195,11 +218,6 @@ def usuario_post():
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
 
-    # Validação: data_nascimento não pode ser futura
-    if data_nascimento and data_nascimento > date.today():
-        cursor.close()
-        return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
-
     # Validar senha forte (supondo função validar_senha definida)
     if not validar_senha(senha):
         cursor.close()
@@ -223,9 +241,11 @@ def usuario_post():
     # Hash da senha
     senha_hash = bcrypt.generate_password_hash(senha).decode('utf-8')
 
-    # Categoria e nome_marca conforme cargo
     if str(cargo) == '1':  # Cliente
         categoria = None
+        nome_marca = None
+    elif str(cargo) == '3':  # Cerimonialista
+        categoria = "Cerimonialista"
         nome_marca = None
     else:
         categoria = data.get('categoria')
@@ -317,6 +337,7 @@ def usuario_put(id):
     cep = request.form.get('cep')
     categoria = request.form.get('categoria')
     nome_marca = request.form.get('nome_marca')
+    ativo = request.form.get('ativo')  # <-- Vem como "1" ou "0"
     imagem = request.files.get('imagem')
 
     # Validação mínima
@@ -325,34 +346,34 @@ def usuario_put(id):
         return jsonify({"error": "Nome e email obrigatórios."}), 400
 
     cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ? AND ID_USUARIO <> ?", (email, id))
-    email_existente = cursor.fetchone()
-    if email_existente:
+    if cursor.fetchone():
         cursor.close()
         return jsonify({"error": "Este email já está em uso por outro usuário."}), 400
 
+    # Converter data
     try:
         data_nascimento = (
             datetime.strptime(data_nascimento_str, '%d-%m-%Y').date()
             if data_nascimento_str else None
         )
+        # IMPEDIR DATA FUTURA
+        if data_nascimento and data_nascimento > date.today():
+            cursor.close()
+            return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
     except Exception:
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
-
-    # Verifica se a data de nascimento não é futura
-    if data_nascimento and data_nascimento > date.today():
-        cursor.close()
-        return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
-
-    # Atualiza CEP independente do cargo
+    # Atualiza CEP
     if cep:
         cursor.execute('UPDATE ENDERECO SET CEP = ? WHERE ID_USUARIO = ?', (cep, id))
 
-    # Campos básicos do usuário
-    update_fields = ["NOME = ?", "EMAIL = ?", "TELEFONE = ?", "DATA_NASCIMENTO = ?"]
-    update_values = [nome, email, telefone, data_nascimento]
+    # Converter status 1/0 → A/I
+    status_db = "A" if ativo == "1" else "I"
 
-    # Se fornecedor, autoriza editar categoria e nome da marca
+    # Atualiza usuário
+    update_fields = ["NOME = ?", "EMAIL = ?", "TELEFONE = ?", "DATA_NASCIMENTO = ?", "STATUS = ?"]
+    update_values = [nome, email, telefone, data_nascimento, status_db]
+
     if cargo == '2':
         update_fields += ["CATEGORIA = ?", "NOME_MARCA = ?"]
         update_values += [categoria, nome_marca]
@@ -363,6 +384,7 @@ def usuario_put(id):
     con.commit()
     cursor.close()
 
+    # Salvar imagem
     if imagem:
         nome_imagem = f"{id}.jpeg"
         pasta_destino = os.path.join(app.config['UPLOAD_FOLDER'], "Usuarios")
@@ -378,11 +400,11 @@ def usuario_put(id):
             'telefone': telefone,
             'data_nascimento': data_nascimento_str,
             'cep': cep,
+            'status': status_db,        # Aqui você já vê A ou I
             'categoria': categoria if cargo == '2' else None,
             'nome_marca': nome_marca if cargo == '2' else None
         }
     })
-
 
 
 @app.route('/login', methods=['POST'])
@@ -412,7 +434,7 @@ def login():
     status = usuario[10]
 
     if status == 'I':
-        return jsonify({"error": "Você errou seu email ou sua senha 3 vezes, o usuário foi inativado."}), 403
+        return jsonify({"error": "O usuário foi inativado."}), 403
 
     if bcrypt.check_password_hash(senha_hash, senha):
         # Resetar tentativas de erro no login bem-sucedido
@@ -446,7 +468,8 @@ def login():
     con.commit()
 
     if tentativas_erro >= 3:
-        cursor.execute("UPDATE USUARIO SET STATUS = 'I' WHERE ID_USUARIO = ?", (id_usuario,))
+        # Inativa o usuário e zera tentativas_erro
+        cursor.execute("UPDATE USUARIO SET STATUS = 'I', TENTATIVAS_ERRO = 0 WHERE ID_USUARIO = ?", (id_usuario,))
         con.commit()
 
     cursor.close()
@@ -680,6 +703,8 @@ def cerimonialistas():
         return jsonify(mensagem='Nenhum dado encontrado')
 
 
+
+
 @app.route('/adms', methods=['GET'])
 def listar_adms():
     cur = con.cursor()
@@ -756,7 +781,7 @@ def fornecedor_por_id(id_fornecedor):
 def servico_por_id(id_servico):
     cursor = con.cursor()
     cursor.execute('''
-        SELECT id_servico, id_usuario, nome, valor, descricao
+        SELECT id_servico, id_usuario, nome, valor, descricao, categoria
         FROM servicos
         WHERE id_servico = ?
     ''', (id_servico,))
@@ -771,7 +796,8 @@ def servico_por_id(id_servico):
         'id_usuario': servico[1],
         'nome': servico[2],
         'valor': servico[3],
-        'descricao': servico[4]
+        'descricao': servico[4],
+        'categoria': servico[5]
     }
 
     return jsonify(
@@ -784,8 +810,7 @@ def servico_por_id(id_servico):
 def servico_get():
     cursor = con.cursor()
     cursor.execute(
-        # 1. GARANTA QUE 'NOME' ESTÁ NO SELECT
-        "SELECT ID_SERVICO, ID_USUARIO, NOME, VALOR, DESCRICAO FROM SERVICOS"
+        "SELECT ID_SERVICO, ID_USUARIO, NOME, VALOR, DESCRICAO, CATEGORIA FROM SERVICOS"
     )
     servicos = cursor.fetchall()
     cursor.close()
@@ -795,15 +820,17 @@ def servico_get():
         servicos_lista.append({
             'id_servico': servico[0],
             'id_usuario': servico[1],
-            'nome': servico[2],       # 2. GARANTA QUE A CHAVE 'nome' EXISTE AQUI
+            'nome': servico[2],
             'valor': servico[3],
-            'descricao': servico[4]
+            'descricao': servico[4],
+            'categoria': servico[5]
         })
 
     if servicos_lista:
         return jsonify(mensagem='Lista de serviços cadastrados', servicos=servicos_lista)
     else:
         return jsonify(mensagem='Nenhum serviço encontrado')
+
 
 @app.route('/servico', methods=['POST'])
 def servico_post():
@@ -829,43 +856,39 @@ def servico_post():
         cursor.close()
         return jsonify({"error": "Usuário não encontrado ou inativo."}), 403
 
-    cargo = resultado[0]
-    if str(cargo) != '2':
-        cursor.close()
-        return jsonify({"error": "Apenas fornecedores podem cadastrar serviços."}), 403
-
-    # 3. Receber dados do form-data (nome, valor, descricao, imagem)
+    # 3. Receber dados do form-data (nome, valor, descricao, categoria, imagem)
     nome = request.form.get('nome')
     valor = request.form.get('valor')
     descricao = request.form.get('descricao')
+    categoria = request.form.get('categoria')
     imagem = request.files.get('imagem')
 
     # 4. Validação dos campos obrigatórios
-    if not nome or not valor:
+    if not nome or not valor or not categoria:
         cursor.close()
         return jsonify({
-            "error": "Campos obrigatórios: nome e valor"
+            "error": "Campos obrigatórios: nome, valor e categoria"
         }), 400
 
     try:
-        # Passo 1: Inserir o novo serviço
+        # Passo 1: Inserir o novo serviço com categoria
         sql_servico = """
-            INSERT INTO SERVICOS (ID_USUARIO, NOME, VALOR, DESCRICAO)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO SERVICOS (ID_USUARIO, NOME, VALOR, DESCRICAO, CATEGORIA)
+            VALUES (?, ?, ?, ?, ?)
         """
-        cursor.execute(sql_servico, (id_usuario, nome, valor, descricao))
+        cursor.execute(sql_servico, (id_usuario, nome, valor, descricao, categoria))
         con.commit()
 
         # Passo 2: Selecionar o ID do serviço recém inserido
         sql_select = """
             SELECT ID_SERVICO
             FROM SERVICOS
-            WHERE ID_USUARIO = ? AND NOME = ? AND VALOR = ? AND DESCRICAO = ?
+            WHERE ID_USUARIO = ? AND NOME = ? AND VALOR = ? AND DESCRICAO = ? AND CATEGORIA = ?
             ORDER BY ID_SERVICO DESC
             FETCH FIRST 1 ROWS ONLY
         """
 
-        cursor.execute(sql_select, (id_usuario, nome, valor, descricao))
+        cursor.execute(sql_select, (id_usuario, nome, valor, descricao, categoria))
         id_servico = cursor.fetchone()[0]
         con.commit()
 
@@ -880,12 +903,6 @@ def servico_post():
 
         cursor.close()
 
-        if imagem:
-            print(f"Recebido arquivo de imagem: {imagem.filename}")
-            # salvar imagem...
-        else:
-            print("Nenhuma imagem recebida")
-
         return jsonify({
             "message": "Serviço cadastrado com sucesso!",
             "servico": {
@@ -893,7 +910,8 @@ def servico_post():
                 'nome': nome,
                 'valor': valor,
                 'descricao': descricao,
-                'imagem_salva': f"/static/uploads/Servico/{id_servico}.jpeg",
+                'categoria': categoria,
+                'imagem_salva': f"/static/uploads/Servico/{id_servico}.jpeg" if imagem else None,
                 'id_servico': id_servico
             }
         }), 201
@@ -930,20 +948,19 @@ def servico_put(id_servico):
     if not serv:
         cursor.close()
         return jsonify({'error': 'Serviço não encontrado'}), 404
-    if serv[0] != id_usuario_token:
-        cursor.close()
-        return jsonify({'error': 'Permissão negada. Só o dono do serviço pode editar.'}), 403
 
     # 3. Recebe dados: aceitar tanto JSON quanto form-data (para imagem)
     nome = None
     valor = None
     descricao = None
+    categoria = None
     imagem = None
 
     if request.content_type and 'multipart/form-data' in request.content_type:
         nome = request.form.get('nome')
         valor = request.form.get('valor')
         descricao = request.form.get('descricao')
+        categoria = request.form.get('categoria')
         imagem = request.files.get('imagem')
     else:
         data = request.get_json(silent=True)
@@ -953,10 +970,11 @@ def servico_put(id_servico):
         nome = data.get('nome')
         valor = data.get('valor')
         descricao = data.get('descricao')
+        categoria = data.get('categoria')
         # imagem só pode via multipart/form-data
 
     # 4. Validação mínima: pelo menos um campo para atualizar
-    if not any([nome, valor, descricao, imagem]):
+    if not any([nome, valor, descricao, categoria, imagem]):
         cursor.close()
         return jsonify({'error': 'Nenhum campo para atualizar'}), 400
 
@@ -974,6 +992,9 @@ def servico_put(id_servico):
         if descricao is not None:
             update_fields.append("DESCRICAO = ?")
             update_values.append(descricao)
+        if categoria is not None:
+            update_fields.append("CATEGORIA = ?")
+            update_values.append(categoria)
 
         if update_fields:
             update_values.append(id_servico)
@@ -983,7 +1004,6 @@ def servico_put(id_servico):
 
         # 6. Salva imagem se enviada
         if imagem:
-            # garante que a config exista
             upload_root = app.config.get('UPLOAD_FOLDER')
             if not upload_root:
                 cursor.close()
@@ -991,7 +1011,6 @@ def servico_put(id_servico):
 
             pasta_servicos = os.path.join(upload_root, "Servicos")
             os.makedirs(pasta_servicos, exist_ok=True)
-            # definir nome de arquivo (ex: <id_servico>.jpeg)
             nome_imagem = f"{id_servico}.jpeg"
             caminho_imagem = os.path.join(pasta_servicos, nome_imagem)
             imagem.save(caminho_imagem)
@@ -1004,6 +1023,7 @@ def servico_put(id_servico):
                 'nome': nome,
                 'valor': valor,
                 'descricao': descricao,
+                'categoria': categoria,
                 'imagem_salva': True if imagem else False
             }
         }), 200
@@ -1038,9 +1058,6 @@ def servico_delete(id_servico):
     if not serv:
         cursor.close()
         return jsonify({'error': 'Serviço não encontrado'}), 404
-    if serv[0] != id_usuario_token:
-        cursor.close()
-        return jsonify({'error': 'Permissão negada. Só o dono do serviço pode excluir.'}), 403
 
     try:
         # 3. Deleta o serviço no banco
@@ -1056,6 +1073,7 @@ def servico_delete(id_servico):
                 os.remove(caminho_imagem)
 
         return jsonify({'message': 'Serviço excluído com sucesso'}), 200
+
     except Exception as e:
         con.rollback()
         if 'cursor' in locals():
@@ -1092,12 +1110,13 @@ def vincular_servico_adm():
     nome = request.form.get('nome')
     valor = request.form.get('valor')
     descricao = request.form.get('descricao')
+    categoria = request.form.get('categoria')
     imagem = request.files.get('imagem')
 
     # Validação
-    if not id_usuario_destino or not nome or not valor:
+    if not id_usuario_destino or not nome or not valor or not categoria:
         cursor.close()
-        return jsonify({"error": "Campos obrigatórios: id_usuario, nome e valor"}), 400
+        return jsonify({"error": "Campos obrigatórios: id_usuario, nome, valor e categoria"}), 400
 
     # Verifica se o usuário destino existe, ativo e é fornecedor (cargo=2)
     cursor.execute("SELECT CARGO FROM USUARIO WHERE ID_USUARIO = ? AND STATUS = 'A'", (id_usuario_destino,))
@@ -1111,13 +1130,13 @@ def vincular_servico_adm():
         return jsonify({"error": "Serviço só pode ser atribuído a usuários fornecedores."}), 400
 
     try:
-        # Insere o serviço usando RETURNING para obter o ID
+        # Insere o serviço incluindo categoria usando RETURNING para obter o ID
         sql_servico = """
-        INSERT INTO SERVICOS (ID_USUARIO, NOME, VALOR, DESCRICAO)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO SERVICOS (ID_USUARIO, NOME, VALOR, DESCRICAO, CATEGORIA)
+        VALUES (?, ?, ?, ?, ?)
         RETURNING ID_SERVICO
         """
-        cursor.execute(sql_servico, (id_usuario_destino, nome, valor, descricao))
+        cursor.execute(sql_servico, (id_usuario_destino, nome, valor, descricao, categoria))
 
         # Obtém o ID retornado pela cláusula RETURNING
         id_servico_inserido = cursor.fetchone()[0]
@@ -1131,6 +1150,8 @@ def vincular_servico_adm():
             pasta_destino = os.path.join(app.config['UPLOAD_FOLDER'], "Servicos")
             os.makedirs(pasta_destino, exist_ok=True)
             imagem.save(os.path.join(pasta_destino, nome_imagem))
+        else:
+            nome_imagem = None
 
         return jsonify({
             "message": "Serviço criado e vinculado ao fornecedor com sucesso!",
@@ -1140,6 +1161,7 @@ def vincular_servico_adm():
                 'nome': nome,
                 'valor': valor,
                 'descricao': descricao,
+                'categoria': categoria,
                 'imagem': nome_imagem
             }
         }), 201
@@ -1149,7 +1171,6 @@ def vincular_servico_adm():
         if 'cursor' in locals():
             cursor.close()
         return jsonify({"error": "Erro ao criar serviço para usuário", "details": str(e)}), 500
-
 
 @app.route('/meus-servicos', methods=['GET'])
 def meus_servicos():
@@ -1176,27 +1197,25 @@ def meus_servicos():
     # 4. Conecta ao banco
     cursor = con.cursor()
 
-    # 5. A QUERY CORRETA:
-    #    - SELECIONA os campos que você quer
-    #    - BUSCA por ID_USUARIO
-    #    - PASSA o id_usuario_logado (vindo do TOKEN) como parâmetro
+    # 5. Consulta incluindo o campo categoria
     query = """
         SELECT 
             ID_SERVICO, 
             ID_USUARIO, 
             NOME, 
             VALOR, 
-            DESCRICAO 
+            DESCRICAO,
+            CATEGORIA
         FROM SERVICOS 
         WHERE ID_USUARIO = ? 
     """
     cursor.execute(query, (id_usuario_logado,))
 
-    # 6. USA fetchall() para pegar TODOS os serviços desse usuário
+    # 6. Obter todos os serviços desse usuário
     servicos = cursor.fetchall()
     cursor.close()
 
-    # 7. Transforma os resultados (lista de tuplas) em uma lista de dicionários
+    # 7. Transformar em lista de dicionários com categoria
     servicos_lista = []
     for servico in servicos:
         servicos_lista.append({
@@ -1204,15 +1223,14 @@ def meus_servicos():
             'id_usuario': servico[1],
             'nome': servico[2],
             'valor': servico[3],
-            'descricao': servico[4]
+            'descricao': servico[4],
+            'categoria': servico[5]
         })
 
-    # 8. Retorna a lista completa de serviços
-    #    (O script que eu te passei na resposta anterior já sabe como ler isso)
+    # 8. Retornar lista de serviços
     if servicos_lista:
         return jsonify(mensagem='Seus serviços cadastrados', servicos=servicos_lista)
     else:
-        # Se não tiver serviços, retorna uma lista vazia
         return jsonify(mensagem='Você ainda não cadastrou nenhum serviço', servicos=[])
 
 
@@ -1260,6 +1278,10 @@ def admin_cadastrar_usuario():
         cursor.close()
         return jsonify({"error": "Nome, email e senha são obrigatórios."}), 400
 
+    if not data_nascimento_str:
+        cursor.close()
+        return jsonify({"error": "Data de nascimento é obrigatório."}), 400
+
     # Verificar email duplicado
     cursor.execute("SELECT ID_USUARIO FROM USUARIO WHERE EMAIL = ?", (email,))
     usuario_existente = cursor.fetchone()
@@ -1277,11 +1299,6 @@ def admin_cadastrar_usuario():
     except Exception:
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
-
-    # Validação: data nascimento não pode ser futura
-    if data_nascimento and data_nascimento > date.today():
-        cursor.close()
-        return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
 
     # Validar senha forte
     if not validar_senha(senha):
@@ -1315,6 +1332,9 @@ def admin_cadastrar_usuario():
     # Categoria e nome da marca para fornecedores e outros
     if cargo == '1':  # Cliente
         categoria = None
+        nome_marca = None
+    elif cargo == '3':
+        categoria = 'Cerimonialista'
         nome_marca = None
     else:
         categoria = data.get('categoria')
@@ -1428,14 +1448,25 @@ def pesquisar_servicos():
 
     cursor = con.cursor()
     consulta = """
-        SELECT S.ID_SERVICO, S.NOME, S.VALOR, S.DESCRICAO, U.CATEGORIA AS FORNECEDOR
+        SELECT 
+            S.ID_SERVICO, 
+            S.NOME, 
+            S.VALOR, 
+            S.DESCRICAO, 
+            S.CATEGORIA,
+            U.NOME AS NOME_FORNECEDOR
         FROM SERVICOS S
         JOIN USUARIO U ON S.ID_USUARIO = U.ID_USUARIO
-        WHERE UPPER(S.NOME) LIKE ? OR UPPER(S.DESCRICAO) LIKE ? OR UPPER(U.CATEGORIA) LIKE ?
+        WHERE 
+            UPPER(S.NOME) LIKE ? 
+            OR UPPER(S.DESCRICAO) LIKE ? 
+            OR UPPER(S.CATEGORIA) LIKE ?
+            OR UPPER(U.NOME) LIKE ?
+        ORDER BY S.NOME
         ROWS 1 TO 50
     """
-    like = f"%{termo}%".upper()
-    cursor.execute(consulta, (like, like, like))
+    like = f"%{termo.upper()}%"
+    cursor.execute(consulta, (like, like, like, like))
     resultados = cursor.fetchall()
     cursor.close()
 
@@ -1445,8 +1476,327 @@ def pesquisar_servicos():
             'nome_servico': s[1],
             'valor': s[2],
             'descricao': s[3],
-            'fornecedor': s[4],
+            'categoria': s[4],
+            'nome_fornecedor': s[5],
         }
         for s in resultados
     ]
     return jsonify({'servicos': lista})
+
+
+@app.route('/festa', methods=['POST'])
+def criar_festa():
+    # 1. Autenticação do usuário via JWT
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    # 2. Verificação do cargo do usuário
+    cursor = con.cursor()
+    cursor.execute("SELECT CARGO FROM USUARIO WHERE ID_USUARIO = ? AND STATUS = 'A'", (id_usuario,))
+    resultado = cursor.fetchone()
+    if not resultado:
+        cursor.close()
+        return jsonify({"error": "Usuário não encontrado ou inativo."}), 403
+
+    cargo = str(resultado[0])
+    if cargo not in ('1', '4'):
+        cursor.close()
+        return jsonify({"error": "Apenas noivos e administradores podem criar festas."}), 403
+
+    # 3. Receber dados da festa via JSON
+    data = request.get_json()
+    nome = data.get('nome')
+    categoria = data.get('categoria')
+    valor = data.get('valor')
+    convidados = data.get('convidados')
+    data_festa = data.get('data_festa')
+    descricao = data.get('descricao')
+
+    if not nome or not categoria or not valor or not convidados or not data_festa:
+        cursor.close()
+        return jsonify({"error": "Campos obrigatórios: nome, categoria, valor, convidados, data_festa"}), 400
+
+    # 4. Validação: só aceita datas futuras
+    try:
+        data_festa_dt = datetime.strptime(data_festa, "%Y-%m-%d")
+    except ValueError:
+        cursor.close()
+        return jsonify({"error": "Formato de data inválido, use AAAA-MM-DD"}), 400
+
+    data_atual = datetime.now().date()
+    if data_festa_dt.date() <= data_atual:
+        cursor.close()
+        return jsonify({"error": "A data da festa deve ser futura"}), 400
+
+    try:
+        sql = """
+            INSERT INTO FESTA (NOME, CATEGORIA, VALOR, CONVIDADOS, DATA_FESTA, DESCRICAO, ID_USUARIO)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING ID_FESTA
+        """
+        cursor.execute(sql, (nome, categoria, valor, convidados, data_festa, descricao, id_usuario))
+        id_festa = cursor.fetchone()[0]
+        con.commit()
+        cursor.close()
+
+        return jsonify({
+            "message": "Festa criada com sucesso!",
+            "festa": {
+                'id_festa': id_festa,
+                'nome': nome,
+                'categoria': categoria,
+                'valor': valor,
+                'convidados': convidados,
+                'data_festa': data_festa,
+                'descricao': descricao,
+                'id_usuario': id_usuario
+            }
+        }), 201
+
+    except Exception as e:
+        con.rollback()
+        if 'cursor' in locals():
+            cursor.close()
+        return jsonify({'error': 'Erro ao criar festa', 'details': str(e)}), 500
+
+
+@app.route('/festa/<int:id_festa>', methods=['PUT'])
+def editar_festa(id_festa):
+    # 1. Autenticação
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    cursor = con.cursor()
+
+    # 2. Verifica se a festa existe e pertence ao usuário
+    cursor.execute("SELECT ID_USUARIO FROM FESTA WHERE ID_FESTA = ?", (id_festa,))
+    festa_existente = cursor.fetchone()
+    if not festa_existente:
+        cursor.close()
+        return jsonify({"error": "Festa não encontrada."}), 404
+
+    if festa_existente[0] != id_usuario:
+        cursor.close()
+        return jsonify({"error": "Permissão negada. Só o dono pode editar esta festa."}), 403
+
+    # 3. Recebe dados para atualização (JSON)
+    data = request.get_json()
+    nome = data.get('nome')
+    categoria = data.get('categoria')
+    valor = data.get('valor')
+    convidados = data.get('convidados')
+    data_festa = data.get('data_festa')
+    descricao = data.get('descricao')
+
+    # 4. Validação: pelo menos um campo deve ser enviado para atualizar
+    if not any([nome, categoria, valor, convidados, data_festa, descricao]):
+        cursor.close()
+        return jsonify({"error": "Nenhum campo para atualizar foi enviado."}), 400
+
+    # 5. Se data_festa for enviada, valida se é uma data futura
+    if data_festa:
+        try:
+            data_festa_dt = datetime.strptime(data_festa, "%Y-%m-%d")
+        except ValueError:
+            cursor.close()
+            return jsonify({"error": "Formato de data inválido, use AAAA-MM-DD"}), 400
+
+        data_atual = datetime.now().date()
+        if data_festa_dt.date() <= data_atual:
+            cursor.close()
+            return jsonify({"error": "A data da festa deve ser futura"}), 400
+
+    try:
+        # 6. Monta dinamicamente a query de update
+        update_fields = []
+        update_values = []
+
+        if nome is not None:
+            update_fields.append("NOME = ?")
+            update_values.append(nome)
+        if categoria is not None:
+            update_fields.append("CATEGORIA = ?")
+            update_values.append(categoria)
+        if valor is not None:
+            update_fields.append("VALOR = ?")
+            update_values.append(valor)
+        if convidados is not None:
+            update_fields.append("CONVIDADOS = ?")
+            update_values.append(convidados)
+        if data_festa is not None:
+            update_fields.append("DATA_FESTA = ?")
+            update_values.append(data_festa)
+        if descricao is not None:
+            update_fields.append("DESCRICAO = ?")
+            update_values.append(descricao)
+
+        if update_fields:
+            update_values.append(id_festa)
+            sql = f"UPDATE FESTA SET {', '.join(update_fields)} WHERE ID_FESTA = ?"
+            cursor.execute(sql, update_values)
+            con.commit()
+
+        # Buscar os dados atualizados da festa para retornar
+        cursor.execute(
+            "SELECT ID_FESTA, NOME, CATEGORIA, VALOR, CONVIDADOS, DATA_FESTA, DESCRICAO, ID_USUARIO FROM FESTA WHERE ID_FESTA = ?",
+            (id_festa,))
+        festa_atualizada = cursor.fetchone()
+        cursor.close()
+
+        festa_dict = {
+            'id_festa': festa_atualizada[0],
+            'nome': festa_atualizada[1],
+            'categoria': festa_atualizada[2],
+            'valor': festa_atualizada[3],
+            'convidados': festa_atualizada[4],
+            'data_festa': festa_atualizada[5],
+            'descricao': festa_atualizada[6],
+            'id_usuario': festa_atualizada[7]
+        }
+
+        return jsonify({
+            "message": "Festa atualizada com sucesso!",
+            "festa": festa_dict
+        }), 200
+
+
+    except Exception as e:
+        con.rollback()
+        if 'cursor' in locals():
+            cursor.close()
+        return jsonify({"error": "Erro ao atualizar festa", "details": str(e)}), 500
+
+
+@app.route('/festas/usuario/<int:id_usuario>', methods=['GET'])
+def listar_festas_usuario(id_usuario):
+    cursor = con.cursor()
+    cursor.execute(
+        '''
+        SELECT ID_FESTA, NOME, CATEGORIA, VALOR, CONVIDADOS, DATA_FESTA, DESCRICAO, ID_USUARIO
+        FROM FESTA
+        WHERE ID_USUARIO = ?
+        ORDER BY DATA_FESTA
+        ''',
+        (id_usuario,)
+    )
+    festas = cursor.fetchall()
+    cursor.close()
+
+    festas_lista = []
+    for festa in festas:
+        # Tenta formatar DATA_FESTA se for datetime ou string
+        data_raw = festa[5]
+        try:
+            # Se vier como datetime.date ou datetime.datetime
+            if isinstance(data_raw, (datetime,)):
+                data_formatada = data_raw.strftime('%d/%m/%Y')
+            else:
+                # Se vier como string no formato 'YYYY-MM-DD'
+                data_formatada = datetime.strptime(str(data_raw), '%Y-%m-%d').strftime('%d/%m/%Y')
+        except Exception:
+            data_formatada = str(data_raw)  # Em último caso, retorna como veio
+
+        festas_lista.append({
+            'id_festa': festa[0],
+            'nome': festa[1],
+            'categoria': festa[2],
+            'valor': festa[3],
+            'convidados': festa[4],
+            'data_festa': data_formatada,
+            'descricao': festa[6],
+            'id_usuario': festa[7]
+        })
+
+    return jsonify({
+        'mensagem': f'{len(festas_lista)} festa(s) encontrada(s) para o usuário.',
+        'festas': festas_lista
+    })
+
+
+@app.route('/relacao', methods=['POST'])
+def criar_relacao():
+    data = request.get_json()
+    id_servico = data.get('id_servico')
+    id_festa = data.get('id_festa')
+
+    if not id_servico or not id_festa:
+        return jsonify({'error': 'É necessário informar id_servico e id_festa.'}), 400
+
+    cursor = con.cursor()
+
+    # Confirma se o serviço existe e busca o dono do serviço
+    cursor.execute("SELECT ID_USUARIO FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
+    servico_data = cursor.fetchone()
+    if not servico_data:
+        cursor.close()
+        return jsonify({'error': 'Serviço não encontrado.'}), 404
+
+    id_usuario = servico_data[0]
+
+    # Busca nome do usuário dono do serviço
+    cursor.execute("SELECT NOME FROM USUARIO WHERE ID_USUARIO = ?", (id_usuario,))
+    usuario_data = cursor.fetchone()
+    if not usuario_data:
+        cursor.close()
+        return jsonify({'error': 'Usuário dono do serviço não encontrado.'}), 404
+
+    nome_usuario = usuario_data[0]
+
+    # Confirma se a festa existe
+    cursor.execute("SELECT 1 FROM FESTA WHERE ID_FESTA = ?", (id_festa,))
+    if not cursor.fetchone():
+        cursor.close()
+        return jsonify({'error': 'Festa não encontrada.'}), 404
+
+    # Cria a relação
+    cursor.execute("INSERT INTO RELACAO (ID_SERVICO, ID_FESTA) VALUES (?, ?)", (id_servico, id_festa))
+    con.commit()
+    cursor.close()
+
+    return jsonify({
+        "message": "Relação criada com sucesso.",
+        "relacao": {
+            "id_servico": id_servico,
+            "id_festa": id_festa,
+            "nome_usuario_servico": nome_usuario
+        }
+    }), 201
+
+
+@app.route('/relacao/<int:id_relacao>', methods=['DELETE'])
+def deletar_relacao(id_relacao):
+    cursor = con.cursor()
+
+    # Verifica se a relação existe
+    cursor.execute("SELECT ID_RELACAO FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    existe = cursor.fetchone()
+    if not existe:
+        cursor.close()
+        return jsonify({'error': 'Relação não encontrada.'}), 404
+
+    # Exclui a relação
+    cursor.execute("DELETE FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    con.commit()
+    cursor.close()
+
+    return jsonify({'message': 'Relação (contrato) cancelada com sucesso.'}), 200
