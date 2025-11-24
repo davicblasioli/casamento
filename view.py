@@ -213,6 +213,10 @@ def usuario_post():
     try:
         data_nascimento = (datetime.strptime(data_nascimento_str, '%d-%m-%Y').date()
                            if data_nascimento_str else None)
+        # Impedir data futura!
+        if data_nascimento and data_nascimento > date.today():
+            cursor.close()
+            return jsonify({"error": "Data de nascimento não pode ser futura."}), 400
         data_nascimento_formatada = data_nascimento.strftime('%d/%m/%Y') if data_nascimento else None
     except Exception:
         cursor.close()
@@ -323,21 +327,23 @@ def usuario_post():
 @app.route('/usuarios/<int:id>', methods=['PUT'])
 def usuario_put(id):
     cursor = con.cursor()
-    cursor.execute("SELECT ID_USUARIO, CARGO FROM USUARIO WHERE ID_USUARIO = ?", (id,))
+    cursor.execute("SELECT ID_USUARIO, CARGO, CATEGORIA FROM USUARIO WHERE ID_USUARIO = ?", (id,))
     usuario_data = cursor.fetchone()
     if not usuario_data:
         cursor.close()
         return jsonify({'error': 'Usuário não encontrado'}), 404
 
     cargo = str(usuario_data[1])
+    categoria_antiga = str(usuario_data[2]) if usuario_data[2] is not None else None
+
     nome = request.form.get('nome')
     email = request.form.get('email')
     telefone = request.form.get('telefone')
     data_nascimento_str = request.form.get('data_nascimento')
     cep = request.form.get('cep')
-    categoria = request.form.get('categoria')
+    categoria_nova = request.form.get('categoria')
     nome_marca = request.form.get('nome_marca')
-    ativo = request.form.get('ativo')  # <-- Vem como "1" ou "0"
+    ativo = request.form.get('ativo')
     imagem = request.files.get('imagem')
 
     # Validação mínima
@@ -350,8 +356,8 @@ def usuario_put(id):
         cursor.close()
         return jsonify({"error": "Este email já está em uso por outro usuário."}), 400
 
-    # Verificação de serviço criado para impedir alteração de categoria
-    if cargo == '2' and categoria:  # Só verifica se é perfil com categoria relevante
+    # Só impede se cargo == '2' (tipo fornecedor/comercialista), e se a categoria realmente está sendo trocada
+    if cargo == '2' and categoria_nova and categoria_antiga != categoria_nova:
         cursor.execute("SELECT 1 FROM SERVICOS WHERE ID_USUARIO = ?", (id,))
         tem_servicos = cursor.fetchone()
         if tem_servicos:
@@ -376,17 +382,24 @@ def usuario_put(id):
     if cep:
         cursor.execute('UPDATE ENDERECO SET CEP = ? WHERE ID_USUARIO = ?', (cep, id))
 
-    # Converter status 1/0 → A/I
-    status_db = "A" if ativo == "1" else "I"
+    # Buscar o status atual do usuário antes da edição
+    cursor.execute("SELECT STATUS FROM USUARIO WHERE ID_USUARIO = ?", (id,))
+    status_atual = cursor.fetchone()
+    status_atual = status_atual[0] if status_atual else "A"  # Padrão ativo
+
+    # Converter status apenas se veio valor, senão mantém o atual
+    if ativo is not None:
+        status_db = "A" if ativo == "1" else "I"
+    else:
+        status_db = status_atual
 
     # Atualiza usuário
     update_fields = ["NOME = ?", "EMAIL = ?", "TELEFONE = ?", "DATA_NASCIMENTO = ?", "STATUS = ?"]
     update_values = [nome, email, telefone, data_nascimento, status_db]
 
-    # Só permite atualizar categoria se não tiver serviço criado (já validado acima)
     if cargo == '2':
         update_fields += ["CATEGORIA = ?", "NOME_MARCA = ?"]
-        update_values += [categoria, nome_marca]
+        update_values += [categoria_nova, nome_marca]
 
     update_values.append(id)
     sql_update = f"UPDATE USUARIO SET {', '.join(update_fields)} WHERE ID_USUARIO = ?"
@@ -411,7 +424,7 @@ def usuario_put(id):
             'data_nascimento': data_nascimento_str,
             'cep': cep,
             'status': status_db,
-            'categoria': categoria if cargo == '2' else None,
+            'categoria': categoria_nova if cargo == '2' else None,
             'nome_marca': nome_marca if cargo == '2' else None
         }
     })
