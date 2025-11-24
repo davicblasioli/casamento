@@ -350,6 +350,14 @@ def usuario_put(id):
         cursor.close()
         return jsonify({"error": "Este email já está em uso por outro usuário."}), 400
 
+    # Verificação de serviço criado para impedir alteração de categoria
+    if cargo == '2' and categoria:  # Só verifica se é perfil com categoria relevante
+        cursor.execute("SELECT 1 FROM SERVICOS WHERE ID_USUARIO = ?", (id,))
+        tem_servicos = cursor.fetchone()
+        if tem_servicos:
+            cursor.close()
+            return jsonify({"error": "Não é possível alterar a categoria. O usuário já possui serviço cadastrado."}), 403
+
     # Converter data
     try:
         data_nascimento = (
@@ -363,6 +371,7 @@ def usuario_put(id):
     except Exception:
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
+
     # Atualiza CEP
     if cep:
         cursor.execute('UPDATE ENDERECO SET CEP = ? WHERE ID_USUARIO = ?', (cep, id))
@@ -374,6 +383,7 @@ def usuario_put(id):
     update_fields = ["NOME = ?", "EMAIL = ?", "TELEFONE = ?", "DATA_NASCIMENTO = ?", "STATUS = ?"]
     update_values = [nome, email, telefone, data_nascimento, status_db]
 
+    # Só permite atualizar categoria se não tiver serviço criado (já validado acima)
     if cargo == '2':
         update_fields += ["CATEGORIA = ?", "NOME_MARCA = ?"]
         update_values += [categoria, nome_marca]
@@ -400,7 +410,7 @@ def usuario_put(id):
             'telefone': telefone,
             'data_nascimento': data_nascimento_str,
             'cep': cep,
-            'status': status_db,        # Aqui você já vê A ou I
+            'status': status_db,
             'categoria': categoria if cargo == '2' else None,
             'nome_marca': nome_marca if cargo == '2' else None
         }
@@ -1059,13 +1069,20 @@ def servico_delete(id_servico):
         cursor.close()
         return jsonify({'error': 'Serviço não encontrado'}), 404
 
+    # 3. Verifica se serviço está vinculado a alguma RELACAO
+    cursor.execute("SELECT 1 FROM RELACAO WHERE ID_SERVICO = ?", (id_servico,))
+    relacao_existente = cursor.fetchone()
+    if relacao_existente:
+        cursor.close()
+        return jsonify({'error': 'Serviço já está contratado em uma festa. Não pode ser excluído.'}), 403
+
     try:
-        # 3. Deleta o serviço no banco
+        # 4. Deleta o serviço no banco
         cursor.execute("DELETE FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
         con.commit()
         cursor.close()
 
-        # 4. Remove imagem associada (se existir)
+        # 5. Remove imagem associada (se existir)
         upload_root = app.config.get('UPLOAD_FOLDER')
         if upload_root:
             caminho_imagem = os.path.join(upload_root, "Servicos", f"{id_servico}.jpeg")
@@ -1847,3 +1864,57 @@ def listar_relacoes_por_festa(id_festa):
         relacoes.append(relacao)
 
     return jsonify(relacoes)
+
+
+@app.route('/fornecedor/<int:id_usuario>/festas', methods=['GET'])
+def festas_contratadas_para_fornecedor(id_usuario):
+    cursor = con.cursor()
+    cursor.execute("SELECT ID_SERVICO, NOME, CATEGORIA, VALOR, DESCRICAO FROM SERVICOS WHERE ID_USUARIO = ?", (id_usuario,))
+    servicos = cursor.fetchall()
+    servicos_ids = [s[0] for s in servicos]
+    servicos_map = {s[0]: {"id_servico": s[0], "nome": s[1], "categoria": s[2], "valor": s[3], "descricao": s[4]} for s in servicos}
+
+    festas = []
+    if servicos_ids:
+        format_strings = ','.join(['?'] * len(servicos_ids))
+        cursor.execute(f"""
+            SELECT R.ID_RELACAO, R.ID_SERVICO, F.ID_FESTA, F.NOME, F.CATEGORIA, F.VALOR, F.CONVIDADOS, F.DATA_FESTA, F.DESCRICAO
+            FROM RELACAO R
+            JOIN FESTA F ON R.ID_FESTA = F.ID_FESTA
+            WHERE R.ID_SERVICO IN ({format_strings})
+        """, tuple(servicos_ids))
+        resultados = cursor.fetchall()
+
+        festas_map = {}
+        for relacao in resultados:
+            id_relacao, id_servico, id_festa, nome, categoria, valor, convidados, data_festa, descricao = relacao
+
+            # --- FORMATAÇÃO DA DATA ---
+            # Se data_festa vier como string, converter para objeto datetime
+            if isinstance(data_festa, str):
+                try:
+                    data_obj = datetime.strptime(data_festa[:10], "%Y-%m-%d")
+                except Exception:
+                    data_obj = None
+            else:
+                data_obj = data_festa
+
+            data_formatada = data_obj.strftime("%d/%m/%Y") if data_obj else data_festa
+
+            if id_festa not in festas_map:
+                festas_map[id_festa] = {
+                    "id_festa": id_festa,
+                    "nome": nome,
+                    "categoria": categoria,
+                    "valor": valor,
+                    "convidados": convidados,
+                    "data_festa": data_formatada,
+                    "descricao": descricao,
+                    "servicos_contratados": []
+                }
+            festas_map[id_festa]["servicos_contratados"].append(servicos_map[id_servico])
+
+        festas = list(festas_map.values())
+
+    cursor.close()
+    return jsonify(festas)
