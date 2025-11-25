@@ -8,6 +8,48 @@ import requests
 import jwt
 import os
 from flask_mail import Mail, Message
+from geopy.distance import distance
+
+
+import requests
+
+import requests
+
+
+def cep_to_coords(cep):
+    try:
+        # Consulta endereço pelo CEP na BrasilAPI
+        url_cep = f"https://brasilapi.com.br/api/cep/v2/{cep}"
+        resposta = requests.get(url_cep, timeout=5)
+        if resposta.status_code != 200:
+            return None
+        dados = resposta.json()
+
+        # Monta endereço completo para geocodificação
+        endereco = f"{dados.get('street', '')}, {dados.get('city', '')}, {dados.get('state', '')}, Brasil"
+
+        # Consulta coords pela API Nominatim
+        url_geo = "https://nominatim.openstreetmap.org/search"
+        params = {
+            'q': endereco,
+            'format': 'json',
+            'limit': 1
+        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resposta_geo = requests.get(url_geo, params=params, headers=headers, timeout=5)
+        if resposta_geo.status_code != 200:
+            return None
+        resultado_geo = resposta_geo.json()
+        if not resultado_geo:
+            return None
+
+        lat = float(resultado_geo[0]['lat'])
+        lon = float(resultado_geo[0]['lon'])
+        return (lat, lon)
+
+    except Exception:
+        return None
+
 
 mail = Mail(app)  # Inicialize a extensão Flask-Mail
 
@@ -96,7 +138,6 @@ def buscar_dados_cep(cep):
             return None
     except Exception:
         return None
-
 
 @app.route('/usuario', methods=['GET'])
 def usuario():
@@ -378,9 +419,28 @@ def usuario_put(id):
         cursor.close()
         return jsonify({"error": "Data de nascimento inválida. Use dd-mm-aaaa."}), 400
 
-    # Atualiza CEP
+    # Atualiza CEP e demais dados do endereço
     if cep:
-        cursor.execute('UPDATE ENDERECO SET CEP = ? WHERE ID_USUARIO = ?', (cep, id))
+        info_cep = buscar_dados_cep(cep)
+        # Ajuste para garantir valores strings não None na atualização do endereço
+        if info_cep:
+            bairro = info_cep.get('bairro') or ''
+            cidade = info_cep.get('cidade') or ''
+            uf = info_cep.get('uf') or ''
+            logradouro = info_cep.get('logradouro') or ''
+
+            cursor.execute(
+                """
+                UPDATE ENDERECO
+                SET CEP = ?, BAIRRO = ?, CIDADE = ?, UF = ?, LOGRADOURO = ?
+                WHERE ID_USUARIO = ?
+                """,
+                (cep, bairro, cidade, uf, logradouro, id)
+            )
+
+        else:
+            # Se não conseguir buscar o CEP, atualiza só o CEP
+            cursor.execute('UPDATE ENDERECO SET CEP = ? WHERE ID_USUARIO = ?', (cep, id))
 
     # Buscar o status atual do usuário antes da edição
     cursor.execute("SELECT STATUS FROM USUARIO WHERE ID_USUARIO = ?", (id,))
@@ -428,7 +488,6 @@ def usuario_put(id):
             'nome_marca': nome_marca if cargo == '2' else None
         }
     })
-
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -831,28 +890,83 @@ def servico_por_id(id_servico):
 
 @app.route('/servico', methods=['GET'])
 def servico_get():
+    # 1. Autenticação - pega o token do header
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
     cursor = con.cursor()
-    cursor.execute(
-        "SELECT ID_SERVICO, ID_USUARIO, NOME, VALOR, DESCRICAO, CATEGORIA FROM SERVICOS"
-    )
+    # Busca o CEP do cliente logado
+    cursor.execute("SELECT CEP FROM ENDERECO WHERE ID_USUARIO = ?", (id_usuario,))
+    endereco_cliente = cursor.fetchone()
+    if not endereco_cliente or not endereco_cliente[0]:
+        cursor.close()
+        return jsonify({'mensagem': 'CEP do cliente não encontrado'}), 404
+
+    cep_cliente = endereco_cliente[0]
+
+    # Converte CEP do cliente em coordenadas
+    coords_cliente = cep_to_coords(cep_cliente)
+    if not coords_cliente:
+        cursor.close()
+        return jsonify({'mensagem': 'Não foi possível obter coordenadas do CEP do cliente'}), 400
+
+    lat_cliente, lon_cliente = coords_cliente
+
+    # Busca os serviços com detalhes do fornecedor e endereço
+    cursor.execute("""
+        SELECT s.ID_SERVICO, s.ID_USUARIO, s.NOME, s.VALOR, s.DESCRICAO, s.CATEGORIA, 
+               e.CEP, e.LOGRADOURO, e.BAIRRO, e.CIDADE, e.UF, u.EMAIL
+        FROM SERVICOS s
+        JOIN ENDERECO e ON s.ID_USUARIO = e.ID_USUARIO
+        JOIN USUARIO u ON s.ID_USUARIO = u.ID_USUARIO
+    """)
     servicos = cursor.fetchall()
     cursor.close()
 
-    servicos_lista = []
+    if not servicos:
+        return jsonify(mensagem='Nenhum serviço encontrado')
+
+    lista_servicos = []
+
     for servico in servicos:
-        servicos_lista.append({
-            'id_servico': servico[0],
-            'id_usuario': servico[1],
-            'nome': servico[2],
-            'valor': servico[3],
-            'descricao': servico[4],
-            'categoria': servico[5]
+        (id_servico, id_usuario_fornecedor, nome, valor, descricao, categoria,
+         cep_fornecedor, logradouro, bairro, cidade, uf, email) = servico
+
+        coords_fornecedor = cep_to_coords(cep_fornecedor)
+        if not coords_fornecedor:
+            continue  # Ignora fornecedores sem coordenadas válidas
+
+        lat_fornecedor, lon_fornecedor = coords_fornecedor
+        dist = distance((lat_cliente, lon_cliente), (lat_fornecedor, lon_fornecedor)).km
+        local_fornecedor = f"{logradouro}, {bairro}, {cidade} - {uf}"
+
+        lista_servicos.append({
+            'id_servico': id_servico,
+            'id_usuario': id_usuario_fornecedor,
+            'nome': nome,
+            'valor': valor,
+            'descricao': descricao,
+            'categoria': categoria,
+            'cep_fornecedor': cep_fornecedor,
+            'local_fornecedor': local_fornecedor,
+            'email_fornecedor': email,
+            'distancia_km': dist
         })
 
-    if servicos_lista:
-        return jsonify(mensagem='Lista de serviços cadastrados', servicos=servicos_lista)
-    else:
-        return jsonify(mensagem='Nenhum serviço encontrado')
+    # Ordena a lista pelo campo 'distancia_km' (do mais próximo para o mais distante)
+    lista_servicos.sort(key=lambda x: x['distancia_km'])
+
+    return jsonify(mensagem='Lista de serviços ordenada por proximidade', servicos=lista_servicos)
 
 
 @app.route('/servico', methods=['POST'])
@@ -1625,9 +1739,18 @@ def editar_festa(id_festa):
         cursor.close()
         return jsonify({"error": "Festa não encontrada."}), 404
 
+    # Verifica se usuário é o dono da festa
     if festa_existente[0] != id_usuario:
-        cursor.close()
-        return jsonify({"error": "Permissão negada. Só o dono pode editar esta festa."}), 403
+        # Se não for dono, verifica se é cerimonialista com serviço relacionado à festa
+        cursor.execute("""
+            SELECT 1 FROM RELACOES r
+            JOIN SERVICOS s ON r.ID_SERVICO = s.ID_SERVICO
+            WHERE r.ID_FESTA = ? AND s.ID_USUARIO = ?
+        """, (id_festa, id_usuario))
+        relacao = cursor.fetchone()
+        if not relacao:
+            cursor.close()
+            return jsonify({"error": "Permissão negada. Só o dono ou cerimonialista relacionado pode editar esta festa."}), 403
 
     # 3. Recebe dados para atualização (JSON)
     data = request.get_json()
@@ -1765,16 +1888,51 @@ def listar_festas_usuario(id_usuario):
 
 @app.route('/relacao/<int:id_relacao>', methods=['DELETE'])
 def deletar_relacao(id_relacao):
+    # 1. Autenticação
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
     cursor = con.cursor()
 
-    # Verifica se a relação existe
-    cursor.execute("SELECT ID_RELACAO FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
-    existe = cursor.fetchone()
-    if not existe:
+    # 2. Verifica se a relação existe e busca id_festa e id_servico vínculados
+    cursor.execute("SELECT ID_FESTA, ID_SERVICO FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    relacao = cursor.fetchone()
+    if not relacao:
         cursor.close()
         return jsonify({'error': 'Relação não encontrada.'}), 404
+    id_festa, id_servico_relacao = relacao
 
-    # Exclui a relação
+    # 3. Verifica se o usuário possui um serviço vinculado a esta festa (ou seja, é cerimonialista nesta festa)
+    cursor.execute("""
+        SELECT 1 FROM RELACAO r
+        JOIN SERVICOS s ON r.ID_SERVICO = s.ID_SERVICO
+        WHERE r.ID_FESTA = ? AND s.ID_USUARIO = ?
+    """, (id_festa, id_usuario))
+    cerimonialista_na_festa = cursor.fetchone()
+
+    if not cerimonialista_na_festa:
+        cursor.close()
+        return jsonify({'error': 'Permissão negada. Você não é cerimonialista dessa festa.'}), 403
+
+    # 4. Impede dele excluir sua própria relação
+    cursor.execute("SELECT ID_SERVICO FROM SERVICOS WHERE ID_USUARIO = ?", (id_usuario,))
+    servicos_usuario = cursor.fetchall()
+    servicos_usuario_ids = [s[0] for s in servicos_usuario]
+    if id_servico_relacao in servicos_usuario_ids:
+        cursor.close()
+        return jsonify({'error': 'Você não pode excluir sua própria relação.'}), 403
+
+    # 5. Se passou nas verificações, exclui relação
     cursor.execute("DELETE FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
     con.commit()
     cursor.close()
@@ -1784,6 +1942,20 @@ def deletar_relacao(id_relacao):
 
 @app.route('/relacao', methods=['POST'])
 def criar_relacao():
+    # 1. Autenticação
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
     data = request.get_json()
     id_servico = data.get('id_servico')
     id_festa = data.get('id_festa')
@@ -1793,11 +1965,22 @@ def criar_relacao():
 
     cursor = con.cursor()
 
+    # Verifica se o usuário logado é cerimonialista na festa (possui serviço relacionado à festa)
+    cursor.execute("""
+        SELECT 1 FROM RELACAO r
+        JOIN SERVICOS s ON r.ID_SERVICO = s.ID_SERVICO
+        WHERE r.ID_FESTA = ? AND s.ID_USUARIO = ?
+    """, (id_festa, id_usuario))
+    relacao_cerimonialista = cursor.fetchone()
+    if not relacao_cerimonialista:
+        cursor.close()
+        return jsonify({'error': 'Permissão negada. Você não é cerimonialista dessa festa.'}), 403
+
     # Verifica se já existe uma relação igual
     cursor.execute("SELECT 1 FROM RELACAO WHERE ID_SERVICO = ? AND ID_FESTA = ?", (id_servico, id_festa))
     if cursor.fetchone():
         cursor.close()
-        return jsonify({'error': 'Esta relação já existe!'}), 409  # 409 = Conflict
+        return jsonify({'error': 'Esta relação já existe!'}), 409
 
     # Confirma se o serviço existe e busca o dono do serviço
     cursor.execute("SELECT ID_USUARIO FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
@@ -1806,10 +1989,10 @@ def criar_relacao():
         cursor.close()
         return jsonify({'error': 'Serviço não encontrado.'}), 404
 
-    id_usuario = servico_data[0]
+    id_usuario_servico = servico_data[0]
 
     # Busca nome do usuário dono do serviço
-    cursor.execute("SELECT NOME FROM USUARIO WHERE ID_USUARIO = ?", (id_usuario,))
+    cursor.execute("SELECT NOME FROM USUARIO WHERE ID_USUARIO = ?", (id_usuario_servico,))
     usuario_data = cursor.fetchone()
     if not usuario_data:
         cursor.close()
