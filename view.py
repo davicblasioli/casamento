@@ -1931,3 +1931,26 @@ def festas_contratadas_para_fornecedor(id_usuario):
 
     cursor.close()
     return jsonify(festas)
+
+
+@app.route('/festa/<int:id_festa>', methods=['DELETE'])
+def excluir_festa(id_festa):
+    cursor = con.cursor()
+    # Verifica se a festa existe
+    cursor.execute("SELECT 1 FROM FESTA WHERE ID_FESTA = ?", (id_festa,))
+    if not cursor.fetchone():
+        cursor.close()
+        return jsonify({'error': 'Festa não encontrada.'}), 404
+
+    try:
+        # Exclui todas as relações da festa
+        cursor.execute("DELETE FROM RELACAO WHERE ID_FESTA = ?", (id_festa,))
+        # Exclui a festa
+        cursor.execute("DELETE FROM FESTA WHERE ID_FESTA = ?", (id_festa,))
+        con.commit()
+        cursor.close()
+        return jsonify({'message': 'Festa e todas as relações vinculadas excluídas com sucesso.'}), 200
+    except Exception as e:
+        con.rollback()
+        cursor.close()
+        return jsonify({'error': f'Erro ao excluir festa: {str(e)}'}), 500
