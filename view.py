@@ -890,7 +890,6 @@ def servico_por_id(id_servico):
 
 @app.route('/servico', methods=['GET'])
 def servico_get():
-    # 1. Autenticação - pega o token do header
     token = request.headers.get('Authorization')
     if not token:
         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
@@ -913,8 +912,6 @@ def servico_get():
         return jsonify({'mensagem': 'CEP do cliente não encontrado'}), 404
 
     cep_cliente = endereco_cliente[0]
-
-    # Converte CEP do cliente em coordenadas
     coords_cliente = cep_to_coords(cep_cliente)
     if not coords_cliente:
         cursor.close()
@@ -922,13 +919,13 @@ def servico_get():
 
     lat_cliente, lon_cliente = coords_cliente
 
-    # Busca os serviços com detalhes do fornecedor e endereço
+    # Busca todos os serviços com dados básicos e endereço do fornecedor e email
     cursor.execute("""
-        SELECT s.ID_SERVICO, s.ID_USUARIO, s.NOME, s.VALOR, s.DESCRICAO, s.CATEGORIA, 
+        SELECT s.ID_SERVICO, s.ID_USUARIO, s.NOME, s.VALOR, s.DESCRICAO, s.CATEGORIA,
                e.CEP, e.LOGRADOURO, e.BAIRRO, e.CIDADE, e.UF, u.EMAIL
         FROM SERVICOS s
-        JOIN ENDERECO e ON s.ID_USUARIO = e.ID_USUARIO
-        JOIN USUARIO u ON s.ID_USUARIO = u.ID_USUARIO
+        LEFT JOIN ENDERECO e ON s.ID_USUARIO = e.ID_USUARIO
+        LEFT JOIN USUARIO u ON s.ID_USUARIO = u.ID_USUARIO
     """)
     servicos = cursor.fetchall()
     cursor.close()
@@ -942,13 +939,19 @@ def servico_get():
         (id_servico, id_usuario_fornecedor, nome, valor, descricao, categoria,
          cep_fornecedor, logradouro, bairro, cidade, uf, email) = servico
 
-        coords_fornecedor = cep_to_coords(cep_fornecedor)
-        if not coords_fornecedor:
-            continue  # Ignora fornecedores sem coordenadas válidas
+        if cep_fornecedor:
+            coords_fornecedor = cep_to_coords(cep_fornecedor)
+        else:
+            coords_fornecedor = None
 
-        lat_fornecedor, lon_fornecedor = coords_fornecedor
-        dist = distance((lat_cliente, lon_cliente), (lat_fornecedor, lon_fornecedor)).km
-        local_fornecedor = f"{logradouro}, {bairro}, {cidade} - {uf}"
+        # Se não tiver coordenadas válidas, coloca distância alta para ordenar por último
+        if coords_fornecedor:
+            lat_fornecedor, lon_fornecedor = coords_fornecedor
+            dist = distance((lat_cliente, lon_cliente), (lat_fornecedor, lon_fornecedor)).km
+        else:
+            dist = float('inf')  # valor alto para ficar no final da lista
+
+        local_fornecedor = f"{logradouro or ''}, {bairro or ''}, {cidade or ''} - {uf or ''}".strip(', -')
 
         lista_servicos.append({
             'id_servico': id_servico,
@@ -960,11 +963,11 @@ def servico_get():
             'cep_fornecedor': cep_fornecedor,
             'local_fornecedor': local_fornecedor,
             'email_fornecedor': email,
-            'distancia_km': dist
+            'distancia_km': dist if dist != float('inf') else None  # pode exibir null para distâncias não calculadas
         })
 
-    # Ordena a lista pelo campo 'distancia_km' (do mais próximo para o mais distante)
-    lista_servicos.sort(key=lambda x: x['distancia_km'])
+    # Ordena a lista pelo campo 'distancia_km' (os None ficarão no final)
+    lista_servicos.sort(key=lambda x: (x['distancia_km'] is None, x['distancia_km']))
 
     return jsonify(mensagem='Lista de serviços ordenada por proximidade', servicos=lista_servicos)
 
