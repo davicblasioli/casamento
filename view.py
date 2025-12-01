@@ -1983,47 +1983,45 @@ def editar_relacao(id_relacao):
 
     data = request.get_json()
     nome_novo = data.get('nome')
-    situacao_nova = data.get('situacao')  # 'I' (incompleto) ou 'C' (concluído)
+    situacao_nova = data.get('situacao')  # 'I' ou 'C'
 
     if nome_novo is None and situacao_nova is None:
         return jsonify({'error': 'Pelo menos um dos campos nome ou situacao deve ser informado.'}), 400
 
-    # Valida situação
     if situacao_nova and situacao_nova not in ['I', 'C']:
         return jsonify({'error': 'Situação deve ser "I" (incompleto) ou "C" (concluído).'}), 400
 
     cursor = con.cursor()
 
-    # 1. Verifica se a relação existe e pega ID_FESTA
-    cursor.execute("SELECT ID_FESTA FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    # 1. Busca dados da relação: festa e serviço
+    cursor.execute("SELECT ID_FESTA, ID_SERVICO FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
     relacao_data = cursor.fetchone()
     if not relacao_data:
         cursor.close()
         return jsonify({'error': 'Relação não encontrada.'}), 404
 
-    id_festa = relacao_data[0]
+    id_festa, id_servico = relacao_data
 
-    # 2. Verifica permissão (mesma lógica da criação)
-    cursor.execute("""
-        SELECT 1 FROM RELACAO r
-        JOIN SERVICOS s ON r.ID_SERVICO = s.ID_SERVICO
-        WHERE r.ID_FESTA = ? AND s.ID_USUARIO = ?
-    """, (id_festa, id_usuario))
-    eh_cerimonialista = cursor.fetchone() is not None
+    # 2. Verifica se o usuário é o cerimonialista DONO do serviço dessa relação
+    cursor.execute("SELECT ID_USUARIO FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
+    servico_data = cursor.fetchone()
+    id_usuario_servico = servico_data[0] if servico_data else None
+    eh_cerimonialista_da_relacao = (id_usuario_servico == id_usuario)
 
-    cursor.execute("""
-        SELECT 1 FROM FESTA
-        WHERE ID_FESTA = ? AND ID_USUARIO = ?
-    """, (id_festa, id_usuario))
-    eh_dono_festa = cursor.fetchone() is not None
+    # 3. Verifica se é o dono (noivo) da festa
+    cursor.execute("SELECT ID_USUARIO FROM FESTA WHERE ID_FESTA = ?", (id_festa,))
+    festa_data = cursor.fetchone()
+    id_usuario_festa = festa_data[0] if festa_data else None
+    eh_dono_festa = (id_usuario_festa == id_usuario)
 
-    if not (eh_cerimonialista or eh_dono_festa):
+    # 4. Se não for nem cerimonialista da relação nem dono da festa, bloqueia
+    if not (eh_cerimonialista_da_relacao or eh_dono_festa):
         cursor.close()
         return jsonify({
-            'error': 'Permissão negada. Apenas o cerimonialista ou o dono da festa podem editar as relações desta festa.'
+            'error': 'Permissão negada. Apenas o cerimonialista desta relação ou o dono da festa podem editar esta relação.'
         }), 403
 
-    # 3. Monta UPDATE apenas com campos informados
+    # 5. Monta UPDATE apenas com campos informados
     update_fields = []
     update_values = []
 
@@ -2055,15 +2053,14 @@ def editar_relacao(id_relacao):
     }), 200
 
 
-
 @app.route('/relacao/festa/<int:id_festa>', methods=['GET'])
 def listar_relacoes_por_festa(id_festa):
     cursor = con.cursor()
     sql = """
         SELECT
-            R.ID_RELACAO,
-            S.ID_SERVICO, S.NOME, S.VALOR, S.DESCRICAO, S.CATEGORIA,
-            U.ID_USUARIO, U.NOME, U.EMAIL, U.TELEFONE, U.CATEGORIA
+            R.ID_RELACAO, R.NOME, R.CATEGORIA, R.SITUACAO,
+            S.ID_SERVICO, S.NOME AS NOME_SERVICO, S.VALOR, S.DESCRICAO, S.CATEGORIA AS CATEGORIA_SERVICO,
+            U.ID_USUARIO, U.NOME AS NOME_USUARIO, U.EMAIL, U.TELEFONE, U.CATEGORIA AS CATEGORIA_USUARIO
         FROM RELACAO R
         JOIN SERVICOS S ON R.ID_SERVICO = S.ID_SERVICO
         JOIN USUARIO U ON S.ID_USUARIO = U.ID_USUARIO
@@ -2077,19 +2074,22 @@ def listar_relacoes_por_festa(id_festa):
     for row in resultados:
         relacao = {
             "id_relacao": row[0],
+            "nome": row[1],           # ← NOVO: Nome da relação
+            "categoria": row[2],      # ← NOVO: Categoria da relação
+            "situacao": row[3],       # ← NOVO: Situação (I/C)
             "servico": {
-                "id_servico": row[1],
-                "nome": row[2],
-                "valor": row[3],
-                "descricao": row[4],
-                "categoria": row[5]
+                "id_servico": row[4],
+                "nome": row[5],
+                "valor": row[6],
+                "descricao": row[7],
+                "categoria": row[8]   # Categoria do serviço
             },
             "usuario": {
-                "id_usuario": row[6],
-                "nome": row[7],
-                "email": row[8],
-                "telefone": row[9],
-                "categoria": row[10]
+                "id_usuario": row[9],
+                "nome": row[10],
+                "email": row[11],
+                "telefone": row[12],
+                "categoria": row[13]  # Categoria do usuário
             }
         }
         relacoes.append(relacao)
