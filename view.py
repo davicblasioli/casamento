@@ -2052,15 +2052,17 @@ def editar_relacao(id_relacao):
         }
     }), 200
 
-
 @app.route('/relacao/festa/<int:id_festa>', methods=['GET'])
 def listar_relacoes_por_festa(id_festa):
     cursor = con.cursor()
+    # ADICIONEI R.SITUACAO NO SELECT
     sql = """
-        SELECT
-            R.ID_RELACAO, R.NOME, R.CATEGORIA, R.SITUACAO,
-            S.ID_SERVICO, S.NOME AS NOME_SERVICO, S.VALOR, S.DESCRICAO, S.CATEGORIA AS CATEGORIA_SERVICO,
-            U.ID_USUARIO, U.NOME AS NOME_USUARIO, U.EMAIL, U.TELEFONE, U.CATEGORIA AS CATEGORIA_USUARIO
+        SELECT 
+            R.ID_RELACAO, 
+            R.NOME, 
+            R.SITUACAO, 
+            S.ID_SERVICO, S.NOME, S.VALOR, S.DESCRICAO, S.CATEGORIA,
+            U.ID_USUARIO, U.NOME, U.EMAIL, U.TELEFONE, U.CATEGORIA
         FROM RELACAO R
         JOIN SERVICOS S ON R.ID_SERVICO = S.ID_SERVICO
         JOIN USUARIO U ON S.ID_USUARIO = U.ID_USUARIO
@@ -2074,28 +2076,26 @@ def listar_relacoes_por_festa(id_festa):
     for row in resultados:
         relacao = {
             "id_relacao": row[0],
-            "nome": row[1],           # ← NOVO: Nome da relação
-            "categoria": row[2],      # ← NOVO: Categoria da relação
-            "situacao": row[3],       # ← NOVO: Situação (I/C)
+            "nome": row[1],
+            "situacao": row[2],  # <--- IMPORTANTE: Pegando a situação ('I' ou 'C')
             "servico": {
-                "id_servico": row[4],
-                "nome": row[5],
-                "valor": row[6],
-                "descricao": row[7],
-                "categoria": row[8]   # Categoria do serviço
+                "id_servico": row[3], # Índices mudaram +1 por causa do campo novo
+                "nome": row[4],
+                "valor": row[5],
+                "descricao": row[6],
+                "categoria": row[7]
             },
             "usuario": {
-                "id_usuario": row[9],
-                "nome": row[10],
-                "email": row[11],
-                "telefone": row[12],
-                "categoria": row[13]  # Categoria do usuário
+                "id_usuario": row[8],
+                "nome": row[9],
+                "email": row[10],
+                "telefone": row[11],
+                "categoria": row[12]
             }
         }
         relacoes.append(relacao)
 
     return jsonify(relacoes)
-
 
 @app.route('/fornecedor/<int:id_usuario>/festas', methods=['GET'])
 def festas_contratadas_para_fornecedor(id_usuario):
@@ -2172,3 +2172,4 @@ def excluir_festa(id_festa):
         con.rollback()
         cursor.close()
         return jsonify({'error': f'Erro ao excluir festa: {str(e)}'}), 500
+
