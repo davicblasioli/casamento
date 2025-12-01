@@ -281,7 +281,8 @@ def usuario_post():
         uf = dados_cep['uf']
         cidade = dados_cep['cidade']
         logradouro = dados_cep['logradouro']
-        tipo_endereco = '2' if str(cargo) == '2' else '1'  # Comercial se cargo=2, senão residencial
+        # Comercial se cargo for 2 ou 3, senão residencial
+        tipo_endereco = '2' if str(cargo) in ['2', '3'] else '1'[1]
 
     # Hash da senha
     senha_hash = bcrypt.generate_password_hash(senha).decode('utf-8')
@@ -890,86 +891,28 @@ def servico_por_id(id_servico):
 
 @app.route('/servico', methods=['GET'])
 def servico_get():
-    token = request.headers.get('Authorization')
-    if not token:
-        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
-
-    token = remover_bearer(token)
-    try:
-        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
-        id_usuario = payload['id_usuario']
-    except jwt.ExpiredSignatureError:
-        return jsonify({'mensagem': 'Token expirado'}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({'mensagem': 'Token inválido'}), 401
-
     cursor = con.cursor()
-    # Busca o CEP do cliente logado
-    cursor.execute("SELECT CEP FROM ENDERECO WHERE ID_USUARIO = ?", (id_usuario,))
-    endereco_cliente = cursor.fetchone()
-    if not endereco_cliente or not endereco_cliente[0]:
-        cursor.close()
-        return jsonify({'mensagem': 'CEP do cliente não encontrado'}), 404
-
-    cep_cliente = endereco_cliente[0]
-    coords_cliente = cep_to_coords(cep_cliente)
-    if not coords_cliente:
-        cursor.close()
-        return jsonify({'mensagem': 'Não foi possível obter coordenadas do CEP do cliente'}), 400
-
-    lat_cliente, lon_cliente = coords_cliente
-
-    # Busca todos os serviços com dados básicos e endereço do fornecedor e email
-    cursor.execute("""
-        SELECT s.ID_SERVICO, s.ID_USUARIO, s.NOME, s.VALOR, s.DESCRICAO, s.CATEGORIA,
-               e.CEP, e.LOGRADOURO, e.BAIRRO, e.CIDADE, e.UF, u.EMAIL
-        FROM SERVICOS s
-        LEFT JOIN ENDERECO e ON s.ID_USUARIO = e.ID_USUARIO
-        LEFT JOIN USUARIO u ON s.ID_USUARIO = u.ID_USUARIO
-    """)
+    cursor.execute(
+        "SELECT ID_SERVICO, ID_USUARIO, NOME, VALOR, DESCRICAO, CATEGORIA FROM SERVICOS"
+    )
     servicos = cursor.fetchall()
     cursor.close()
 
-    if not servicos:
-        return jsonify(mensagem='Nenhum serviço encontrado')
-
-    lista_servicos = []
-
+    servicos_lista = []
     for servico in servicos:
-        (id_servico, id_usuario_fornecedor, nome, valor, descricao, categoria,
-         cep_fornecedor, logradouro, bairro, cidade, uf, email) = servico
-
-        if cep_fornecedor:
-            coords_fornecedor = cep_to_coords(cep_fornecedor)
-        else:
-            coords_fornecedor = None
-
-        # Se não tiver coordenadas válidas, coloca distância alta para ordenar por último
-        if coords_fornecedor:
-            lat_fornecedor, lon_fornecedor = coords_fornecedor
-            dist = distance((lat_cliente, lon_cliente), (lat_fornecedor, lon_fornecedor)).km
-        else:
-            dist = float('inf')  # valor alto para ficar no final da lista
-
-        local_fornecedor = f"{logradouro or ''}, {bairro or ''}, {cidade or ''} - {uf or ''}".strip(', -')
-
-        lista_servicos.append({
-            'id_servico': id_servico,
-            'id_usuario': id_usuario_fornecedor,
-            'nome': nome,
-            'valor': valor,
-            'descricao': descricao,
-            'categoria': categoria,
-            'cep_fornecedor': cep_fornecedor,
-            'local_fornecedor': local_fornecedor,
-            'email_fornecedor': email,
-            'distancia_km': dist if dist != float('inf') else None  # pode exibir null para distâncias não calculadas
+        servicos_lista.append({
+            'id_servico': servico[0],
+            'id_usuario': servico[1],
+            'nome': servico[2],
+            'valor': servico[3],
+            'descricao': servico[4],
+            'categoria': servico[5]
         })
 
-    # Ordena a lista pelo campo 'distancia_km' (os None ficarão no final)
-    lista_servicos.sort(key=lambda x: (x['distancia_km'] is None, x['distancia_km']))
-
-    return jsonify(mensagem='Lista de serviços ordenada por proximidade', servicos=lista_servicos)
+    if servicos_lista:
+        return jsonify(mensagem='Lista de serviços cadastrados', servicos=servicos_lista)
+    else:
+        return jsonify(mensagem='Nenhum serviço encontrado')
 
 
 @app.route('/servico', methods=['POST'])
@@ -1945,7 +1888,7 @@ def deletar_relacao(id_relacao):
 
 @app.route('/relacao', methods=['POST'])
 def criar_relacao():
-    # 1. Autenticação
+    # 1. Autenticação (mantém igual)
     token = request.headers.get('Authorization')
     if not token:
         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
@@ -1962,55 +1905,51 @@ def criar_relacao():
     data = request.get_json()
     id_servico = data.get('id_servico')
     id_festa = data.get('id_festa')
+    nome_relacao = data.get('nome')
 
-    if not id_servico or not id_festa:
-        return jsonify({'error': 'É necessário informar id_servico e id_festa.'}), 400
+    if not id_servico or not id_festa or not nome_relacao:
+        return jsonify({'error': 'É necessário informar id_servico, id_festa e nome.'}), 400
 
     cursor = con.cursor()
 
-    # Verifica se o usuário logado é cerimonialista na festa (possui serviço relacionado à festa)
+    # 2. Verificações de permissão (mantém igual)
     cursor.execute("""
         SELECT 1 FROM RELACAO r
         JOIN SERVICOS s ON r.ID_SERVICO = s.ID_SERVICO
         WHERE r.ID_FESTA = ? AND s.ID_USUARIO = ?
     """, (id_festa, id_usuario))
-    relacao_cerimonialista = cursor.fetchone()
-    if not relacao_cerimonialista:
-        cursor.close()
-        return jsonify({'error': 'Permissão negada. Você não é cerimonialista dessa festa.'}), 403
+    eh_cerimonialista = cursor.fetchone() is not None
 
-    # Verifica se já existe uma relação igual
+    cursor.execute("""
+        SELECT 1 FROM FESTA
+        WHERE ID_FESTA = ? AND ID_USUARIO = ?
+    """, (id_festa, id_usuario))
+    eh_dono_festa = cursor.fetchone() is not None
+
+    if not (eh_cerimonialista or eh_dono_festa):
+        cursor.close()
+        return jsonify({
+            'error': 'Permissão negada. Apenas o cerimonialista ou o dono da festa podem gerenciar as relações desta festa.'}), 403
+
+    # Busca categoria do serviço
+    cursor.execute("SELECT CATEGORIA FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
+    categoria_servico = cursor.fetchone()
+    if not categoria_servico:
+        cursor.close()
+        return jsonify({'error': 'Serviço não encontrado.'}), 404
+    categoria = categoria_servico[0]
+
+    # Verifica se já existe relação igual
     cursor.execute("SELECT 1 FROM RELACAO WHERE ID_SERVICO = ? AND ID_FESTA = ?", (id_servico, id_festa))
     if cursor.fetchone():
         cursor.close()
         return jsonify({'error': 'Esta relação já existe!'}), 409
 
-    # Confirma se o serviço existe e busca o dono do serviço
-    cursor.execute("SELECT ID_USUARIO FROM SERVICOS WHERE ID_SERVICO = ?", (id_servico,))
-    servico_data = cursor.fetchone()
-    if not servico_data:
-        cursor.close()
-        return jsonify({'error': 'Serviço não encontrado.'}), 404
-
-    id_usuario_servico = servico_data[0]
-
-    # Busca nome do usuário dono do serviço
-    cursor.execute("SELECT NOME FROM USUARIO WHERE ID_USUARIO = ?", (id_usuario_servico,))
-    usuario_data = cursor.fetchone()
-    if not usuario_data:
-        cursor.close()
-        return jsonify({'error': 'Usuário dono do serviço não encontrado.'}), 404
-
-    nome_usuario = usuario_data[0]
-
-    # Confirma se a festa existe
-    cursor.execute("SELECT 1 FROM FESTA WHERE ID_FESTA = ?", (id_festa,))
-    if not cursor.fetchone():
-        cursor.close()
-        return jsonify({'error': 'Festa não encontrada.'}), 404
-
-    # Cria a relação
-    cursor.execute("INSERT INTO RELACAO (ID_SERVICO, ID_FESTA) VALUES (?, ?)", (id_servico, id_festa))
+    # Cria a relação COM situacao = 'I' (incompleto) por padrão
+    cursor.execute("""
+        INSERT INTO RELACAO (ID_SERVICO, ID_FESTA, NOME, CATEGORIA, SITUACAO) 
+        VALUES (?, ?, ?, ?, 'I')
+    """, (id_servico, id_festa, nome_relacao, categoria))
     con.commit()
     cursor.close()
 
@@ -2019,9 +1958,102 @@ def criar_relacao():
         "relacao": {
             "id_servico": id_servico,
             "id_festa": id_festa,
-            "nome_usuario_servico": nome_usuario
+            "nome": nome_relacao,
+            "categoria": categoria,
+            "situacao": "I"  # Incompleto
         }
     }), 201
+
+
+@app.route('/relacao/<int:id_relacao>', methods=['PUT'])
+def editar_relacao(id_relacao):
+    # 1. Autenticação
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_usuario = payload['id_usuario']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    data = request.get_json()
+    nome_novo = data.get('nome')
+    situacao_nova = data.get('situacao')  # 'I' (incompleto) ou 'C' (concluído)
+
+    if nome_novo is None and situacao_nova is None:
+        return jsonify({'error': 'Pelo menos um dos campos nome ou situacao deve ser informado.'}), 400
+
+    # Valida situação
+    if situacao_nova and situacao_nova not in ['I', 'C']:
+        return jsonify({'error': 'Situação deve ser "I" (incompleto) ou "C" (concluído).'}), 400
+
+    cursor = con.cursor()
+
+    # 1. Verifica se a relação existe e pega ID_FESTA
+    cursor.execute("SELECT ID_FESTA FROM RELACAO WHERE ID_RELACAO = ?", (id_relacao,))
+    relacao_data = cursor.fetchone()
+    if not relacao_data:
+        cursor.close()
+        return jsonify({'error': 'Relação não encontrada.'}), 404
+
+    id_festa = relacao_data[0]
+
+    # 2. Verifica permissão (mesma lógica da criação)
+    cursor.execute("""
+        SELECT 1 FROM RELACAO r
+        JOIN SERVICOS s ON r.ID_SERVICO = s.ID_SERVICO
+        WHERE r.ID_FESTA = ? AND s.ID_USUARIO = ?
+    """, (id_festa, id_usuario))
+    eh_cerimonialista = cursor.fetchone() is not None
+
+    cursor.execute("""
+        SELECT 1 FROM FESTA
+        WHERE ID_FESTA = ? AND ID_USUARIO = ?
+    """, (id_festa, id_usuario))
+    eh_dono_festa = cursor.fetchone() is not None
+
+    if not (eh_cerimonialista or eh_dono_festa):
+        cursor.close()
+        return jsonify({
+            'error': 'Permissão negada. Apenas o cerimonialista ou o dono da festa podem editar as relações desta festa.'
+        }), 403
+
+    # 3. Monta UPDATE apenas com campos informados
+    update_fields = []
+    update_values = []
+
+    if nome_novo is not None:
+        update_fields.append("NOME = ?")
+        update_values.append(nome_novo)
+
+    if situacao_nova is not None:
+        update_fields.append("SITUACAO = ?")
+        update_values.append(situacao_nova)
+
+    if not update_fields:
+        cursor.close()
+        return jsonify({'error': 'Nenhum campo para atualizar.'}), 400
+
+    update_values.append(id_relacao)
+    sql_update = f"UPDATE RELACAO SET {', '.join(update_fields)} WHERE ID_RELACAO = ?"
+    cursor.execute(sql_update, update_values)
+    con.commit()
+    cursor.close()
+
+    return jsonify({
+        "message": "Relação editada com sucesso!",
+        "relacao": {
+            "id_relacao": id_relacao,
+            "nome": nome_novo,
+            "situacao": situacao_nova
+        }
+    }), 200
+
 
 
 @app.route('/relacao/festa/<int:id_festa>', methods=['GET'])
